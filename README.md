@@ -1,279 +1,194 @@
-Nazwa
-PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp
+Jasne — jeśli chcesz mieć ten opis w formie zwykłego tekstu do wklejenia do konsoli/terminala lub pliku README, możesz skopiować poniższy fragment:
 
-Cel programu
-Skrypt służy do generowania i sprawdzania adresów kryptowalutowych z pliku zawierającego klucze prywatne. Jest to narzędzie do skanowania wielu kryptowalut jednocześnie.
+```text
+AllChainScanner - Multi-Coin BIP32 Address Scanner
 
-Główne funkcje
-Wczytywanie danych
+🚀 High-Performance Cryptocurrency Address Scanner for 6+ Blockchains
 
-Czyta plik adresy.bin z posortowanymi 20-bajtowymi hashami adresów (RIPEMD-160)
+This project demonstrates a multi-threaded cryptocurrency address scanner that generates addresses from private keys and checks them against a pre-sorted binary database. It supports compressed and uncompressed public keys across 6 major cryptocurrencies.
 
-Czyta plik tekstowy z kluczami prywatnymi (64 znaki hex w każdej linii)
+⚠️ Educational & Security Research Tool Only
 
-Generowanie adresów
-Dla każdego klucza prywatnego generuje:
+This program is not for unauthorized wallet recovery or brute-forcing.
+Use it only for controlled research, security testing, or educational purposes.
 
-Kompresowany i niekompresowany klucz publiczny
+📋 OVERVIEW
 
-Adresy dla 6 kryptowalut:
+This tool continuously processes private keys from a text file, derives addresses according to BIP32 standards, and compares them against a memory-mapped binary database of known addresses.
 
-Bitcoin (P2PKH, P2SH, SegWit)
+When a generated address exists in the database, the private key and corresponding address are saved to a results file.
 
-Litecoin (P2PKH, P2SH, SegWit)
+Supported features:
+- Multi-threaded parallel processing (60 threads)
+- 6 cryptocurrencies simultaneously
+- Compressed & uncompressed public key formats
+- Memory-mapped I/O for ultra-fast lookups
+- Binary search for O(log n) comparisons
 
-Dogecoin (P2PKH)
+✨ FEATURES
 
-Dash (P2PKH)
+- Multi-Coin Support:
+  Bitcoin, Litecoin, Dogecoin, Dash, Ethereum, Zcash
 
-Ethereum (0x...)
+- Address Formats:
+  P2PKH, P2SH, SegWit (Bech32), Ethereum 0x..., Zcash t1/t3
 
-Zcash (t1..., t3...)
+- Compressed/Uncompressed:
+  Both public key formats supported
 
-Szybkie wyszukiwanie
+- Parallel Processing:
+  60 concurrent threads for maximum CPU utilization
 
-Używa binary search na posortowanym pliku
+- Memory Mapping:
+  mmap for fast binary file access
 
-Plik jest mapowany do pamięci (mmap) dla szybkiego dostępu
+- Binary Search:
+  O(log n) database lookups
 
-Wielowątkowość
+- Speed Monitor:
+  Real-time performance statistics
 
-60 wątków konsumenckich
+- Test Mode:
+  Built-in test for private key = 1
 
-Kolejka zadań na 200,000 kluczy
+SUPPORTED CRYPTOCURRENCIES
 
-Monitor prędkości w tle
+Bitcoin (BTC):
+  P2PKH, P2SH, SegWit
+  Prefixes: 1..., 3..., bc1...
 
-Wydajność
-⚠️ Niska prędkość z powodu:
+Litecoin (LTC):
+  P2PKH, P2SH, SegWit
+  Prefixes: L..., M..., ltc1...
 
-Generowania ~50+ wariantów adresów na każdy klucz
+Dogecoin (DOGE):
+  P2PKH
+  Prefix: D...
 
-Obsługi wielu kryptowalut jednocześnie
+Dash:
+  P2PKH
+  Prefix: X...
 
-Obliczeń kryptograficznych (SHA, RIPEMD, secp256k1)
+Ethereum (ETH):
+  Prefix: 0x...
 
-Typowa prędkość: 2-5 Mkeys/s (zależy od CPU)
+Zcash (ZEC):
+  P2PKH, P2SH
+  Prefixes: t1..., t3...
 
-Obsługiwane kryptowaluty
-Moneta	Formaty adresów
-Bitcoin	1..., 3..., bc1...
-Litecoin	L..., M..., ltc1...
-Dogecoin	D...
-Dash	X...
-Ethereum	0x...
-Zcash	t1..., t3...
-Kompilacja
-bash
-g++ -std=c++17 -O3 -pthread -lssl -lcrypto -lsecp256k1 PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp -o scanner
-Użycie
-bash
-./scanner adresy.bin klucze.txt
-Przykład działania
-Program najpierw wykonuje test dla klucza prywatnego = 1, pokazując wszystkie wygenerowane adresy i porównując je z oczekiwanymi wartościami. Następnie przechodzi do właściwego skanowania.
+📊 PERFORMANCE
 
-Zalety
-✅ Obsługa wielu kryptowalut
-✅ Zarówno kompresowane jak i niekompresowane klucze
-✅ Efektywne użycie pamięci (mmap)
-✅ Równoległe przetwarzanie
-✅ Szybkie wyszukiwanie binarne
+Processing Speed:
+  2-5 Mkeys/s (CPU dependent)
 
-Wady
-❌ Wolniejsze niż skanery pojedynczych monet
-❌ Wymaga dużej ilości RAM dla dużych plików
-❌ Złożona konfiguracja
+Threads:
+  60
 
-Pliki wyjściowe
-found.txt - znalezione adresy z kluczami prywatnymi
+Queue Size:
+  200,000 keys
 
-Na ekranie - statystyki prędkości i postępu
+Address Variants per Key:
+  ~50+
 
-To narzędzie jest idealne dla osób, które chcą sprawdzić swoje klucze prywatne w wielu blockchainach jednocześnie, ale muszą być świadome kompromisu między szybkością a funkcjonalnością.
+🔧 INSTALLATION
 
-This response is AI-generated, for reference only.
-a angielski i ruski
-ENGLISH
-Multi-Coin BIP32 Scanner - Description
-Program Name
-PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp
+Ubuntu / Debian:
 
-Purpose
-A cryptocurrency address scanner that processes private keys from a text file and checks them against multiple blockchain address databases simultaneously.
+sudo apt-get install libssl-dev libsecp256k1-dev build-essential
 
-Key Features
-Data Loading
+macOS:
 
-Reads sorted adresy.bin file with 20-byte RIPEMD-160 address hashes
+brew install openssl secp256k1
 
-Reads text file with private keys (64 hex characters per line)
+COMPILATION
 
-Address Generation
-For each private key, generates:
+g++ -std=c++17 -O3 -pthread -lssl -lcrypto -lsecp256k1 \
+PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp \
+-o allchainsanner
 
-Compressed and uncompressed public keys
+📖 USAGE
 
-Addresses for 6 cryptocurrencies:
+./allchainsanner <addresses.bin> <keys.txt>
 
-Bitcoin (P2PKH, P2SH, SegWit)
+Example:
 
-Litecoin (P2PKH, P2SH, SegWit)
+./allchainsanner database.bin private_keys.txt
 
-Dogecoin (P2PKH)
+Input file format (keys.txt):
 
-Dash (P2PKH)
+0000000000000000000000000000000000000000000000000000000000000001
+0000000000000000000000000000000000000000000000000000000000000002
 
-Ethereum (0x...)
+📁 OUTPUT
 
-Zcash (t1..., t3...)
+Console:
 
-Fast Lookup
+📁 Loaded 1,234,567 addresses from database.bin
+🧵 Starting 60 threads
+⚡ 3.45 Mkeys/s | seeds: 15234 | keys: 762,345 | found: 42
 
-Uses binary search on sorted file
+found.txt:
 
-Memory-mapped file (mmap) for quick access
+PRIV: 0000000000000000000000000000000000000000000000000000000000000001
+PATH: direct_compressed
+ADDR: 1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
+---
 
-Multi-threading
+PRIV: 0000000000000000000000000000000000000000000000000000000000000002
+PATH: direct_uncompressed
+ADDR: 1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
+---
 
-60 consumer threads
+🧪 TEST MODE
 
-Task queue of 200,000 keys
+🔑 TEST FOR PRIVATE KEY = 1 (COMPRESSED + UNCOMPRESSED)
 
-Background speed monitor
+Bitcoin P2PKH (COMPRESSED):
+1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
 
-Performance
-⚠️ Lower speed due to:
+Bitcoin P2PKH (UNCOMPRESSED):
+1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
 
-Generating ~50+ address variants per key
+Bitcoin P2SH:
+3JvL6Ymt8MVWiCNHC7oWU6nLeHNJKLZGLN
 
-Supporting multiple coins simultaneously
+Bitcoin SegWit:
+bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4
 
-Cryptographic computations (SHA, RIPEMD, secp256k1)
+📦 DEPENDENCIES
 
-Typical speed: 2-5 Mkeys/s (CPU dependent)
+- OpenSSL
+- secp256k1
+- pthread
+- keccak_fixed.h
 
-Supported Coins
-Coin	Address Formats
-Bitcoin	1..., 3..., bc1...
-Litecoin	L..., M..., ltc1...
-Dogecoin	D...
-Dash	X...
-Ethereum	0x...
-Zcash	t1..., t3...
-Compilation
-bash
-g++ -std=c++17 -O3 -pthread -lssl -lcrypto -lsecp256k1 PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp -o scanner
-Usage
-bash
-./scanner addresses.bin keys.txt
-Output Files
-found.txt - discovered addresses with private keys
+⚠️ DISCLAIMER
 
-Console - speed statistics and progress
+FOR EDUCATIONAL AND SECURITY RESEARCH PURPOSES ONLY
 
-Advantages
-✅ Multi-coin support
-✅ Compressed and uncompressed keys
-✅ Memory efficient (mmap)
-✅ Parallel processing
-✅ Binary search for O(log n) lookups
+- This tool is not intended for illegal activities
+- Do not use to access wallets you don't own
+- The author takes no responsibility for misuse
+- Always comply with local laws and regulations
 
-Disadvantages
-❌ Slower than single-coin scanners
-❌ Higher RAM requirements
-❌ Complex setup
+📝 LICENSE
 
-РУССКИЙ
-Мульти-монетный BIP32 сканер - Описание
-Имя программы
-PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp
+MIT License
 
-Назначение
-Сканер криптовалютных адресов, который обрабатывает приватные ключи из текстового файла и проверяет их по базам адресов нескольких блокчейнов одновременно.
+🤝 CONTRIBUTING
 
-Основные возможности
-Загрузка данных
+Contributions are welcome.
+Feel free to submit a Pull Request.
 
-Читает отсортированный файл adresy.bin с 20-байтовыми хэшами RIPEMD-160
+📧 CONTACT
 
-Читает текстовый файл с приватными ключами (64 hex символа в строке)
+Author: ethicbrudhack
 
-Генерация адресов
-Для каждого приватного ключа генерирует:
+GitHub: AllChainScanner
 
-Сжатые и несжатые публичные ключи
+⭐ If you find this project useful, please give it a star!
 
-Адреса для 6 криптовалют:
+DONATE: bc1qps62cyk9f9unmdkc9k3ccj9e2h8ywfhg2j53ec
 
-Bitcoin (P2PKH, P2SH, SegWit)
-
-Litecoin (P2PKH, P2SH, SegWit)
-
-Dogecoin (P2PKH)
-
-Dash (P2PKH)
-
-Ethereum (0x...)
-
-Zcash (t1..., t3...)
-
-Быстрый поиск
-
-Использует бинарный поиск по отсортированному файлу
-
-Файл отображается в память (mmap) для быстрого доступа
-
-Многопоточность
-
-60 потребительских потоков
-
-Очередь задач на 200,000 ключей
-
-Фоновый монитор скорости
-
-Производительность
-⚠️ Низкая скорость из-за:
-
-Генерации ~50+ вариантов адресов на каждый ключ
-
-Поддержки множества монет одновременно
-
-Криптографических вычислений (SHA, RIPEMD, secp256k1)
-
-Типичная скорость: 2-5 Mключей/с (зависит от CPU)
-
-Поддерживаемые монеты
-Монета	Форматы адресов
-Bitcoin	1..., 3..., bc1...
-Litecoin	L..., M..., ltc1...
-Dogecoin	D...
-Dash	X...
-Ethereum	0x...
-Zcash	t1..., t3...
-Компиляция
-bash
-g++ -std=c++17 -O3 -pthread -lssl -lcrypto -lsecp256k1 PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp -o scanner
-Использование
-bash
-./scanner addresses.bin keys.txt
-Выходные файлы
-found.txt - найденные адреса с приватными ключами
-
-Консоль - статистика скорости и прогресс
-
-Преимущества
-✅ Поддержка множества монет
-✅ Сжатые и несжатые ключи
-✅ Эффективное использование памяти (mmap)
-✅ Параллельная обработка
-✅ Бинарный поиск для O(log n) проверок
-
-Недостатки
-❌ Медленнее сканеров для одной монеты
-❌ Требует больше RAM
-❌ Сложная настройка
-
-Summary / Резюме
-This tool is ideal for users who want to check their private keys across multiple blockchains simultaneously, but they must be aware of the trade-off between speed and functionality.
-
-Этот инструмент идеален для пользователей, которые хотят проверить свои приватные ключи в нескольких блокчейнах одновременно, но они должны осознавать компромисс между скоростью и функциональностью.
+Built with ❤️ for the crypto research community.
+```
