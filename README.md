@@ -301,4 +301,34 @@ please give it a star!
 
 Built for the cryptocurrency security research community 🔒
 
+## 🔧 GENEROWANIE SEEDÓW
 
+### Opcje generatora:
+
+| Generator | Entropia | Opis |
+|-----------|----------|------|
+| `LCG 16-bit` | 16 bitów | Wygląda na 256-bit ale ma TYLKO 16 bitów! |
+| `glibc rand()` | 31 bitów | Standardowy rand() z glibc |
+| `MSVC rand()` | 15 bitów | Najgorszy - tylko 15 bitów! |
+| `MINSTD` | 31 bitów | Minimalny standard |
+| `RANDU` | 31 bitów | Słynnie zły - widać wzór! |
+| `Java Random` | 48 bitów | Random z Javy |
+| `Mersenne Twister` | 32 bity | **Milk Sad** - podatność CVE-2023-31290 |
+| `time(NULL)` | 32 bity | Czas jako seed |
+| `PID + time` | 32 bity | PID + czas |
+| `Weak /dev/urandom` | 32 bity | Słaby RNG |
+
+### Uruchomienie generatora:
+
+```bash
+# Kompilacja
+g++ -O3 -march=native -o weak_generators weak_generators.cpp
+
+# Generuj 10 seedów z każdego generatora
+./weak_generators -n 10
+
+# Generuj 100 seedów
+./weak_generators -n 100
+
+# Zapisz do własnego pliku
+./weak_generators -n 50 -f moje_seedy.txt
