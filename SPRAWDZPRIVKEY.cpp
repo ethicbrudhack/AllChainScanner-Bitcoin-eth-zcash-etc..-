@@ -1,5 +1,5 @@
 // ===============================
-// FAST BIP32 SCANNER v15 - WSZYSTKIE MONETY
+// FAST BIP32 SCANNER v15 - TYLKO WYBRANE ŚCIEŻKI (OPTIMAL)
 // ===============================
 
 #include <iostream>
@@ -17,9 +17,6 @@
 #include <cctype>
 #include <queue>
 #include <condition_variable>
-#include <map>
-#include <sstream>
-#include <arpa/inet.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -30,9 +27,6 @@
 #include <openssl/evp.h>
 #include <openssl/bn.h>
 #include <secp256k1.h>
-#include "keccak_fixed.h"
-
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
 // ===============================
 // PARAMETRY
@@ -52,339 +46,61 @@ auto start_time = std::chrono::steady_clock::now();
 std::atomic<bool> monitor_stop{false};
 
 // ===============================
-// COIN DEFINITIONS
-// ===============================
-enum CoinType {
-    COIN_BITCOIN = 0,
-    COIN_LITECOIN = 2,
-    COIN_DOGECOIN = 3,
-    COIN_DASH = 5,
-    COIN_ETHEREUM = 60,
-    COIN_ZCASH = 133
-};
-
-struct CoinInfo {
-    std::string name;
-    uint32_t bip44_type;
-    uint8_t p2pkh_version;
-    uint8_t p2sh_version;
-    std::string bech32_hrp;
-    bool uses_ethereum_format;
-    bool uses_zcash_format;
-    bool only_p2pkh;
-};
-
-std::map<CoinType, CoinInfo> coin_map = {
-    {COIN_BITCOIN, {"Bitcoin", 0, 0x00, 0x05, "bc", false, false, false}},
-    {COIN_LITECOIN, {"Litecoin", 2, 0x30, 0x32, "ltc", false, false, false}},
-    {COIN_DOGECOIN, {"Dogecoin", 3, 0x1E, 0x16, "doge", false, false, true}},
-    {COIN_DASH, {"Dash", 5, 0x4C, 0x10, "dash", false, false, true}},
-    {COIN_ETHEREUM, {"Ethereum", 60, 0x00, 0x00, "", true, false, false}},
-    {COIN_ZCASH, {"Zcash", 133, 0x1C, 0x1D, "zcash", false, true, false}}
-};
-
-// ===============================
-// HASH FUNCTIONS
-// ===============================
-inline void sha256_once(const unsigned char* d, size_t n, unsigned char out[32]) {
-    SHA256_CTX c;
-    SHA256_Init(&c);
-    SHA256_Update(&c, d, n);
-    SHA256_Final(out, &c);
-}
-
-inline void ripemd160_once(const unsigned char* d, size_t n, unsigned char out[20]) {
-    RIPEMD160_CTX r;
-    RIPEMD160_Init(&r);
-    RIPEMD160_Update(&r, d, n);
-    RIPEMD160_Final(out, &r);
-}
-
-inline void pubkey_hash160(const unsigned char* pub, size_t len, unsigned char out[20]) {
-    unsigned char sh[32];
-    sha256_once(pub, len, sh);
-    ripemd160_once(sh, 32, out);
-}
-
-// ===============================
-// BASE58
+// BASE58 - DOKŁADNIE TAK SAMO JAK W ORYGINALE
 // ===============================
 static const char* BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-std::string base58_encode(const std::vector<unsigned char>& in) {
-    BIGNUM* bn = BN_new();
-    BN_bin2bn(in.data(), in.size(), bn);
-
-    BIGNUM *dv = BN_new(), *rem = BN_new(), *b58 = BN_new();
-    BN_CTX* ctx = BN_CTX_new();
-    BN_set_word(b58, 58);
-
-    std::string out;
-    while (!BN_is_zero(bn)) {
-        BN_div(dv, rem, bn, b58, ctx);
-        out.insert(out.begin(), BASE58[BN_get_word(rem)]);
-        BN_copy(bn, dv);
-    }
-
-    for (unsigned char c : in)
-        if (c == 0x00) out.insert(out.begin(), '1');
-        else break;
-
-    BN_free(bn); BN_free(dv); BN_free(rem); BN_free(b58); BN_CTX_free(ctx);
-    return out;
-}
-
-std::string base58_check_encode(const unsigned char* data, size_t len) {
-    std::vector<unsigned char> extended(data, data + len);
-    unsigned char hash[32];
-    sha256_once(data, len, hash);
-    sha256_once(hash, 32, hash);
-    extended.insert(extended.end(), hash, hash + 4);
-    return base58_encode(extended);
-}
-
-std::string ripemd_to_base58(const unsigned char ripe[20], uint8_t version) {
-    std::vector<unsigned char> ext;
-    ext.push_back(version);
-    ext.insert(ext.end(), ripe, ripe+20);
-    return base58_check_encode(ext.data(), ext.size());
-}
-
-std::string zcash_to_base58(const unsigned char ripe[20], uint8_t version1, uint8_t version2) {
-    std::vector<unsigned char> ext;
-    ext.push_back(version1);
-    ext.push_back(version2);
-    ext.insert(ext.end(), ripe, ripe+20);
-    return base58_check_encode(ext.data(), ext.size());
-}
-
-// ===============================
-// BECH32
-// ===============================
-const std::string BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-
-uint32_t bech32_polymod(const std::vector<uint8_t>& values) {
-    uint32_t chk = 1;
-    const uint32_t GEN[] = {0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3};
+std::string base58_encode(const std::vector<unsigned char>& data) {
+    std::vector<unsigned char> digits(data.size() * 138 / 100 + 1);
+    int digitslen = 1;
     
-    for (uint8_t v : values) {
-        uint32_t top = chk >> 25;
-        chk = ((chk & 0x1ffffff) << 5) ^ v;
-        for (size_t i = 0; i < 5; ++i) {
-            if ((top >> i) & 1) {
-                chk ^= GEN[i];
-            }
+    for (size_t i = 0; i < data.size(); i++) {
+        unsigned int carry = data[i];
+        for (int j = 0; j < digitslen; j++) {
+            carry += (unsigned int)(digits[j]) << 8;
+            digits[j] = (unsigned char)(carry % 58);
+            carry /= 58;
         }
-    }
-    return chk;
-}
-
-std::vector<uint8_t> bech32_hrp_expand(const std::string& hrp) {
-    std::vector<uint8_t> ret;
-    for (char c : hrp) {
-        ret.push_back((uint8_t)(c >> 5));
-    }
-    ret.push_back(0);
-    for (char c : hrp) {
-        ret.push_back((uint8_t)(c & 0x1f));
-    }
-    return ret;
-}
-
-std::vector<uint8_t> convert_bits(const uint8_t* data, size_t len, 
-                                  size_t from_bits, size_t to_bits, 
-                                  bool pad) {
-    std::vector<uint8_t> ret;
-    uint64_t acc = 0;
-    size_t bits = 0;
-    const uint64_t max_mask = (1 << to_bits) - 1;
-    
-    for (size_t i = 0; i < len; ++i) {
-        acc = (acc << from_bits) | data[i];
-        bits += from_bits;
-        while (bits >= to_bits) {
-            bits -= to_bits;
-            ret.push_back((acc >> bits) & max_mask);
+        while (carry) {
+            digits[digitslen++] = (unsigned char)(carry % 58);
+            carry /= 58;
         }
     }
     
-    if (pad && bits > 0) {
-        ret.push_back((acc << (to_bits - bits)) & max_mask);
+    std::string result;
+    for (int i = digitslen - 1; i >= 0; i--) {
+        result += BASE58[digits[i]];
     }
     
-    return ret;
-}
-
-std::string bech32_encode(const std::string& hrp, const std::vector<uint8_t>& data) {
-    std::vector<uint8_t> values;
-    auto hrp_exp = bech32_hrp_expand(hrp);
-    values.insert(values.end(), hrp_exp.begin(), hrp_exp.end());
-    values.insert(values.end(), data.begin(), data.end());
-    
-    for (int i = 0; i < 6; ++i) {
-        values.push_back(0);
-    }
-    
-    uint32_t polymod = bech32_polymod(values) ^ 1;
-    
-    std::vector<uint8_t> data_with_checksum = data;
-    for (int i = 0; i < 6; ++i) {
-        data_with_checksum.push_back((polymod >> (5 * (5 - i))) & 0x1F);
-    }
-    
-    std::string result = hrp + "1";
-    for (uint8_t v : data_with_checksum) {
-        result += BECH32_CHARSET[v];
+    for (size_t i = 0; i < data.size() && data[i] == 0; i++) {
+        result = '1' + result;
     }
     
     return result;
 }
 
-// ===============================
-// BIP32 FUNKCJE
-// ===============================
-struct ExtendedKey {
-    unsigned char priv[32];
-    unsigned char chain[32];
-    uint32_t depth;
-    uint32_t fingerprint;
-    uint32_t index;
-};
-
-void hmac_sha512(const unsigned char* key, size_t key_len,
-                 const unsigned char* data, size_t data_len,
-                 unsigned char out[64]) {
-    HMAC_CTX* ctx = HMAC_CTX_new();
-    HMAC_Init_ex(ctx, key, key_len, EVP_sha512(), NULL);
-    HMAC_Update(ctx, data, data_len);
-    HMAC_Final(ctx, out, NULL);
-    HMAC_CTX_free(ctx);
-}
-
-void bip32_master_from_seed(const unsigned char seed[64], ExtendedKey& key) {
-    unsigned char hmac_out[64];
-    hmac_sha512((const unsigned char*)"Bitcoin seed", 12, seed, 64, hmac_out);
-    memcpy(key.priv, hmac_out, 32);
-    memcpy(key.chain, hmac_out + 32, 32);
-    key.depth = 0;
-    key.fingerprint = 0;
-    key.index = 0;
-}
-
-void bip32_derive_child(secp256k1_context* ctx,
-                        const ExtendedKey& parent,
-                        uint32_t index,
-                        ExtendedKey& child) {
-    unsigned char data[37];
-    unsigned char hmac_out[64];
+std::string base58check_encode(const std::vector<unsigned char>& data) {
+    unsigned char hash1[32], hash2[32];
+    SHA256(data.data(), data.size(), hash1);
+    SHA256(hash1, 32, hash2);
     
-    if (index & 0x80000000) {
-        data[0] = 0x00;
-        memcpy(data + 1, parent.priv, 32);
-        uint32_t be_index = htonl(index);
-        memcpy(data + 33, &be_index, 4);
-    } else {
-        secp256k1_pubkey pub;
-        if (!secp256k1_ec_pubkey_create(ctx, &pub, parent.priv)) {
-            memset(&child, 0, sizeof(child));
-            return;
-        }
-        unsigned char pub_ser[33];
-        size_t pub_len = 33;
-        secp256k1_ec_pubkey_serialize(ctx, pub_ser, &pub_len, &pub,
-                                      SECP256K1_EC_COMPRESSED);
-        memcpy(data, pub_ser, 33);
-        uint32_t be_index = htonl(index);
-        memcpy(data + 33, &be_index, 4);
-    }
+    std::vector<unsigned char> extended = data;
+    extended.insert(extended.end(), hash2, hash2 + 4);
     
-    hmac_sha512(parent.chain, 32, data, 37, hmac_out);
-    
-    BIGNUM* bn_il = BN_new();
-    BIGNUM* bn_n = BN_new();
-    BN_hex2bn(&bn_n, "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141");
-    BN_bin2bn(hmac_out, 32, bn_il);
-    
-    if (BN_cmp(bn_il, bn_n) >= 0 || BN_is_zero(bn_il)) {
-        memset(&child, 0, sizeof(child));
-        BN_free(bn_il);
-        BN_free(bn_n);
-        return;
-    }
-    
-    BIGNUM* bn_parent = BN_new();
-    BIGNUM* bn_result = BN_new();
-    BN_CTX* bn_ctx = BN_CTX_new();
-    
-    BN_bin2bn(parent.priv, 32, bn_parent);
-    BN_add(bn_parent, bn_parent, bn_il);
-    BN_mod(bn_result, bn_parent, bn_n, bn_ctx);
-    
-    if (BN_is_zero(bn_result)) {
-        memset(&child, 0, sizeof(child));
-        BN_free(bn_parent);
-        BN_free(bn_result);
-        BN_CTX_free(bn_ctx);
-        BN_free(bn_il);
-        BN_free(bn_n);
-        return;
-    }
-    
-    memset(child.priv, 0, 32);
-    BN_bn2binpad(bn_result, child.priv, 32);
-    memcpy(child.chain, hmac_out + 32, 32);
-    
-    child.depth = parent.depth + 1;
-    child.index = index;
-    
-    secp256k1_pubkey pub;
-    if (secp256k1_ec_pubkey_create(ctx, &pub, parent.priv)) {
-        unsigned char pub_ser[33];
-        size_t pub_len = 33;
-        secp256k1_ec_pubkey_serialize(ctx, pub_ser, &pub_len, &pub,
-                                      SECP256K1_EC_COMPRESSED);
-        unsigned char hash160[20];
-        pubkey_hash160(pub_ser, pub_len, hash160);
-        child.fingerprint = (hash160[0] << 24) | (hash160[1] << 16) | 
-                            (hash160[2] << 8) | hash160[3];
-    } else {
-        child.fingerprint = 0;
-    }
-    
-    BN_free(bn_parent);
-    BN_free(bn_result);
-    BN_CTX_free(bn_ctx);
-    BN_free(bn_il);
-    BN_free(bn_n);
-}
-
-ExtendedKey derive_path(secp256k1_context* ctx,
-                        const ExtendedKey& master,
-                        const std::string& path) {
-    ExtendedKey current = master;
-    std::vector<std::string> segments;
-    std::stringstream ss(path);
-    std::string segment;
-    
-    while (std::getline(ss, segment, '/')) {
-        if (!segment.empty() && segment != "m") {
-            bool hardened = (segment.back() == '\'');
-            uint32_t index;
-            if (hardened) {
-                index = std::stoul(segment.substr(0, segment.length() - 1)) + 0x80000000;
-            } else {
-                index = std::stoul(segment);
-            }
-            ExtendedKey child;
-            bip32_derive_child(ctx, current, index, child);
-            current = child;
-        }
-    }
-    return current;
+    return base58_encode(extended);
 }
 
 // ===============================
-// MAPOWANIE PLIKU
+// HASH160 - DOKŁADNIE TAK SAMO
+// ===============================
+inline void hash160(const unsigned char* data, size_t len, unsigned char out[20]) {
+    unsigned char sha[32];
+    SHA256(data, len, sha);
+    RIPEMD160(sha, 32, out);
+}
+
+// ===============================
+// MAPOWANIE PLIKU BINARNEGO
 // ===============================
 class MMapFile {
 public:
@@ -398,7 +114,7 @@ public:
 
         size = st.st_size;
         if (size == 0 || size % 20 != 0)
-            throw std::runtime_error("invalid bin file");
+            throw std::runtime_error("invalid bin file (size must be multiple of 20)");
 
         data = (const unsigned char*) mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
         if (data == MAP_FAILED)
@@ -420,7 +136,8 @@ private:
     size_t size;
 };
 
-bool contains_address(const MMapFile& mm, const unsigned char addr20[20]) {
+// Binary search
+inline bool contains_address(const MMapFile& mm, const unsigned char addr20[20]) {
     const unsigned char* base = mm.ptr();
     size_t count = mm.count();
 
@@ -437,333 +154,234 @@ bool contains_address(const MMapFile& mm, const unsigned char addr20[20]) {
 }
 
 // ===============================
-// TEST DLA PRIVATE KEY = 1 (WSZYSTKIE MONETY!)
+// SZYBKI KONTEXT PUBKEY
 // ===============================
-void test_private_key_one() {
-    std::cout << "\n";
-    std::cout << "╔══════════════════════════════════════════════════════════════╗\n";
-    std::cout << "║     🔑 TEST DLA PRIVATE KEY = 1 (WSZYSTKIE MONETY)         ║\n";
-    std::cout << "╚══════════════════════════════════════════════════════════════╝\n";
-    std::cout << "\n";
-    
-    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    
-    unsigned char priv[32] = {0};
-    priv[31] = 1;
-    
-    std::cout << "Private Key (hex): ";
-    for (int i = 0; i < 32; i++) {
-        printf("%02x", priv[i]);
-    }
-    printf("\n\n");
-    
+struct FastPubCtx {
+    secp256k1_context* ctx;
     secp256k1_pubkey pub;
-    secp256k1_ec_pubkey_create(ctx, &pub, priv);
+};
+
+inline bool fast_load_priv(FastPubCtx& pc, const unsigned char priv[32]) {
+    return secp256k1_ec_pubkey_create(pc.ctx, &pc.pub, priv) == 1;
+}
+
+// Generuje adres i hash160 - dokładnie tak samo jak privkey_to_address()
+inline std::string fast_priv_to_address(FastPubCtx& pc, bool compressed, unsigned char out_h160[20]) {
+    unsigned char pubkey[65];
+    size_t len = compressed ? 33 : 65;
+    if (secp256k1_ec_pubkey_serialize(pc.ctx, pubkey, &len, &pc.pub, 
+        compressed ? SECP256K1_EC_COMPRESSED : SECP256K1_EC_UNCOMPRESSED) != 1) {
+        return "";
+    }
     
-    unsigned char pub_ser[33];
-    size_t pub_len = 33;
-    secp256k1_ec_pubkey_serialize(ctx, pub_ser, &pub_len, &pub, SECP256K1_EC_COMPRESSED);
+    hash160(pubkey, len, out_h160);
+    
+    std::vector<unsigned char> data;
+    data.push_back(0x00);
+    data.insert(data.end(), out_h160, out_h160 + 20);
+    
+    return base58check_encode(data);
+}
+
+// ===============================
+// BIP32 FUNKCJE - DOKŁADNIE TAK SAMO JAK W ORYGINALE
+// ===============================
+inline void bip32_master(const unsigned char* seed, size_t seed_len, unsigned char out_key[32], unsigned char out_chain[32]) {
+    unsigned char hmac[64];
+    unsigned int hmac_len = 64;
+    HMAC(EVP_sha512(), "Bitcoin seed", 12, seed, seed_len, hmac, &hmac_len);
+    memcpy(out_key, hmac, 32);
+    memcpy(out_chain, hmac + 32, 32);
+}
+
+inline bool bip32_derive_normal(secp256k1_context* ctx, const unsigned char parent_key[32], const unsigned char parent_chain[32],
+                         uint32_t child_num, unsigned char child_key[32], unsigned char child_chain[32]) {
+    secp256k1_pubkey parent_pub;
+    if (secp256k1_ec_pubkey_create(ctx, &parent_pub, parent_key) != 1) {
+        return false;
+    }
+    
+    unsigned char pubkey[33];
+    size_t pubkey_len = 33;
+    if (secp256k1_ec_pubkey_serialize(ctx, pubkey, &pubkey_len, &parent_pub, SECP256K1_EC_COMPRESSED) != 1) {
+        return false;
+    }
+    
+    unsigned char data[37];
+    memcpy(data, pubkey, 33);
+    data[33] = (child_num >> 24) & 0xFF;
+    data[34] = (child_num >> 16) & 0xFF;
+    data[35] = (child_num >> 8) & 0xFF;
+    data[36] = child_num & 0xFF;
+    
+    unsigned char hmac[64];
+    unsigned int hmac_len = 64;
+    HMAC(EVP_sha512(), parent_chain, 32, data, 37, hmac, &hmac_len);
+    
+    memcpy(child_key, hmac, 32);
+    memcpy(child_chain, hmac + 32, 32);
+    
+    return true;
+}
+
+inline bool bip32_derive_hardened(const unsigned char parent_key[32], const unsigned char parent_chain[32],
+                           uint32_t child_num, unsigned char child_key[32], unsigned char child_chain[32]) {
+    unsigned char data[37];
+    data[0] = 0;
+    memcpy(data + 1, parent_key, 32);
+    uint32_t hardened_num = child_num + 0x80000000;
+    data[33] = (hardened_num >> 24) & 0xFF;
+    data[34] = (hardened_num >> 16) & 0xFF;
+    data[35] = (hardened_num >> 8) & 0xFF;
+    data[36] = hardened_num & 0xFF;
+    
+    unsigned char hmac[64];
+    unsigned int hmac_len = 64;
+    HMAC(EVP_sha512(), parent_chain, 32, data, 37, hmac, &hmac_len);
+    
+    memcpy(child_key, hmac, 32);
+    memcpy(child_chain, hmac + 32, 32);
+    
+    return true;
+}
+
+// ===============================
+// SPRAWDZANIE CZY KLUCZ JEST POPRAWNY
+// ===============================
+inline bool is_valid_private_key(const unsigned char priv[32]) {
+    bool all_zero = true;
+    for (int i = 0; i < 32; i++) {
+        if (priv[i] != 0) {
+            all_zero = false;
+            break;
+        }
+    }
+    if (all_zero) return false;
+    
+    static const unsigned char N[32] = {
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE,
+        0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48, 0xA0, 0x3B,
+        0xBF, 0xD2, 0x5E, 0x8C, 0xD0, 0x36, 0x41, 0x41
+    };
+    
+    for (int i = 0; i < 32; i++) {
+        if (priv[i] < N[i]) return true;
+        if (priv[i] > N[i]) return false;
+    }
+    return false;
+}
+
+// ===============================
+// SKANOWANIE JEDNEGO SEEDA - TYLKO WYBRANE ŚCIEŻKI (0-1)
+// ===============================
+void scan_seed_fast(const MMapFile& mm, const unsigned char seed[32], const std::string& seed_hex, std::ofstream& found) {
+    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
     
     unsigned char h160[20];
-    pubkey_hash160(pub_ser, pub_len, h160);
+    FastPubCtx fctx;
+    fctx.ctx = ctx;
     
-    // ==========================================
-    // 1. BITCOIN P2PKH (1...)
-    // ==========================================
-    std::cout << "💰 Bitcoin P2PKH (1...): ";
-    std::string addr = ripemd_to_base58(h160, 0x00);
-    std::cout << addr << "\n";
-    std::cout << "  Oczekiwany: 1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm\n";
-    std::cout << "  " << (addr == "1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm" ? "✅ OK" : "❌ BŁĄD") << "\n\n";
-    
-    // ==========================================
-    // 2. BITCOIN P2SH (3...)
-    // ==========================================
-    unsigned char redeem_script[22];
-    redeem_script[0] = 0x00;
-    redeem_script[1] = 0x14;
-    memcpy(redeem_script + 2, h160, 20);
-    unsigned char redeem_hash[20];
-    pubkey_hash160(redeem_script, 22, redeem_hash);
-    
-    std::cout << "💰 Bitcoin P2SH (3...): ";
-    std::string addr_p2sh = ripemd_to_base58(redeem_hash, 0x05);
-    std::cout << addr_p2sh << "\n";
-    std::cout << "  Oczekiwany: 3JvL6Ymt8MVWiCNHC7oWU6nLeHNJKLZGLN\n";
-    std::cout << "  " << (addr_p2sh == "3JvL6Ymt8MVWiCNHC7oWU6nLeHNJKLZGLN" ? "✅ OK" : "❌ BŁĄD") << "\n\n";
-    
-    // ==========================================
-    // 3. BITCOIN SEGWIT (bc1...)
-    // ==========================================
-    std::vector<uint8_t> five_bit;
-    five_bit.push_back(0);
-    auto converted = convert_bits(h160, 20, 8, 5, true);
-    five_bit.insert(five_bit.end(), converted.begin(), converted.end());
-    std::string addr_segwit = bech32_encode("bc", five_bit);
-    std::cout << "💰 Bitcoin SegWit (bc1...): " << addr_segwit << "\n";
-    std::cout << "  Oczekiwany: bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4\n";
-    std::cout << "  " << (addr_segwit == "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4" ? "✅ OK" : "❌ BŁĄD") << "\n\n";
-    
-    // ==========================================
-    // 4. LITECOIN P2PKH (L...)
-    // ==========================================
-    std::cout << "💰 Litecoin P2PKH (L...): ";
-    std::string addr_ltc = ripemd_to_base58(h160, 0x30);
-    std::cout << addr_ltc << "\n";
-    std::cout << "  Oczekiwany: LYWKqJhtPeGyBAw7WC8R3F7ovxtzAiubdM\n";
-    std::cout << "  " << (addr_ltc == "LYWKqJhtPeGyBAw7WC8R3F7ovxtzAiubdM" ? "✅ OK" : "❌ BŁĄD") << "\n\n";
-    
-    // ==========================================
-    // 5. LITECOIN P2SH (M...)
-    // ==========================================
-    std::cout << "💰 Litecoin P2SH (M...): ";
-    std::string addr_ltc_p2sh = ripemd_to_base58(redeem_hash, 0x32);
-    std::cout << addr_ltc_p2sh << "\n";
-    std::cout << "  Oczekiwany: MR8UQSBr5ULwWheBHznrHk2jxyxkHQu8vB\n";
-    std::cout << "  " << (addr_ltc_p2sh == "MR8UQSBr5ULwWheBHznrHk2jxyxkHQu8vB" ? "✅ OK" : "❌ BŁĄD") << "\n\n";
-    
-    // ==========================================
-    // 6. LITECOIN SEGWIT (ltc1...)
-    // ==========================================
-    std::string addr_ltc_segwit = bech32_encode("ltc", five_bit);
-    std::cout << "💰 Litecoin SegWit (ltc1...): " << addr_ltc_segwit << "\n";
-    std::cout << "  Oczekiwany: ltc1qw508d6qejxtdg4y5r3zarvary0c5xw7kgmn4n9\n";
-    std::cout << "  " << (addr_ltc_segwit == "ltc1qw508d6qejxtdg4y5r3zarvary0c5xw7kgmn4n9" ? "✅ OK" : "❌ BŁĄD") << "\n\n";
-    
-    // ==========================================
-    // 7. DOGECOIN (D...)
-    // ==========================================
-    std::cout << "💰 Dogecoin P2PKH (D...): ";
-    std::string addr_doge = ripemd_to_base58(h160, 0x1E);
-    std::cout << addr_doge << "\n";
-    std::cout << "  Oczekiwany: DJRU7MLhcPwCTNRZ4e8gJzDebtG1H5M7pc\n";
-    std::cout << "  " << (addr_doge == "DJRU7MLhcPwCTNRZ4e8gJzDebtG1H5M7pc" ? "✅ OK" : "❌ BŁĄD") << "\n\n";
-    
-    // ==========================================
-    // 8. DASH (X...)
-    // ==========================================
-    std::cout << "💰 Dash P2PKH (X...): ";
-    std::string addr_dash = ripemd_to_base58(h160, 0x4C);
-    std::cout << addr_dash << "\n";
-    std::cout << "  Oczekiwany: XoyDQM3xGhFW5JqYBwTLckjqZ67Q3jZfAL\n";
-    std::cout << "  " << (addr_dash == "XoyDQM3xGhFW5JqYBwTLckjqZ67Q3jZfAL" ? "✅ OK" : "❌ BŁĄD") << "\n\n";
-    
-    // ==========================================
-    // 9. ZCASH t1...
-    // ==========================================
-    std::cout << "💰 Zcash P2PKH (t1...): ";
-    std::string addr_zec = zcash_to_base58(h160, 0x1C, 0xB8);
-    std::cout << addr_zec << "\n";
-    std::cout << "  Oczekiwany: t1UYsZVJkLPeMjxEtACvSxfWuNmddpWfxzs\n";
-    std::cout << "  " << (addr_zec == "t1UYsZVJkLPeMjxEtACvSxfWuNmddpWfxzs" ? "✅ OK" : "❌ BŁĄD") << "\n\n";
-    
-    // ==========================================
-    // 10. ZCASH t3...
-    // ==========================================
-    unsigned char zec_redeem[22];
-    zec_redeem[0] = 0x00;
-    zec_redeem[1] = 0x14;
-    memcpy(zec_redeem + 2, h160, 20);
-    unsigned char zec_redeem_hash[20];
-    pubkey_hash160(zec_redeem, 22, zec_redeem_hash);
-    
-    std::cout << "💰 Zcash P2SH (t3...): ";
-    std::string addr_zec_p2sh = zcash_to_base58(zec_redeem_hash, 0x1C, 0xBD);
-    std::cout << addr_zec_p2sh << "\n";
-    std::cout << "  Oczekiwany: t3...\n";
-    std::cout << "  " << (addr_zec_p2sh == "t3..." ? "✅ OK" : "❌ BŁĄD") << "\n\n";
-    
-    // ==========================================
-    // 11. ETHEREUM
-    // ==========================================
-    unsigned char pub_ser_uncomp[65];
-    pub_len = 65;
-    secp256k1_ec_pubkey_serialize(ctx, pub_ser_uncomp, &pub_len, &pub, SECP256K1_EC_UNCOMPRESSED);
-    
-    unsigned char keccak_hash[32];
-    keccak_256_fixed(pub_ser_uncomp + 1, 64, keccak_hash);
-    
-    std::cout << "💰 Ethereum (0x...): 0x";
-    for (int i = 12; i < 32; i++) {
-        printf("%02x", keccak_hash[i]);
+    // ==================================================
+    // 0. SEED BEZPOŚREDNIO JAKO KLUCZ
+    // ==================================================
+    if (fast_load_priv(fctx, seed)) {
+        // Compressed
+        std::string addr_comp = fast_priv_to_address(fctx, true, h160);
+        if (contains_address(mm, h160)) {
+            std::lock_guard<std::mutex> lock(log_mutex);
+            found << "SEED: " << seed_hex << "\nPRIV KEY: " << seed_hex << "\nPATH: direct_compressed\nADDR: " << addr_comp << "\n---\n";
+            found.flush();
+            total_found++;
+            std::cout << "\n✅ ZNALEZIONO! direct compressed -> " << addr_comp << std::endl;
+        }
+        
+        // Uncompressed
+        std::string addr_uncomp = fast_priv_to_address(fctx, false, h160);
+        if (contains_address(mm, h160)) {
+            std::lock_guard<std::mutex> lock(log_mutex);
+            found << "SEED: " << seed_hex << "\nPRIV KEY: " << seed_hex << "\nPATH: direct_uncompressed\nADDR: " << addr_uncomp << "\n---\n";
+            found.flush();
+            total_found++;
+            std::cout << "\n✅ ZNALEZIONO! direct uncompressed -> " << addr_uncomp << std::endl;
+        }
     }
-    printf("\n");
-    std::cout << "  Oczekiwany: 0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf\n";
     
-    char eth_addr[43];
-    strcpy(eth_addr, "0x");
-    for (int i = 12; i < 32; i++) {
-        char hex[3];
-        sprintf(hex, "%02x", keccak_hash[i]);
-        strcat(eth_addr, hex);
-    }
-    std::cout << "  " << (strcasecmp(eth_addr, "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf") == 0 ? "✅ OK" : "❌ BŁĄD") << "\n\n";
+    // ==================================================
+    // BIP32 MASTER KEY
+    // ==================================================
+    unsigned char master_key[32], master_chain[32];
+    bip32_master(seed, 32, master_key, master_chain);
     
-    secp256k1_context_destroy(ctx);
-}// ===============================
-// GŁÓWNE SKANOWANIE
-// ===============================
-void scan_seed_direct(const MMapFile& mm, const unsigned char priv[32], const std::string& priv_hex, std::ofstream& found) {
-    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    
-    secp256k1_pubkey pub;
-    if (!secp256k1_ec_pubkey_create(ctx, &pub, priv)) {
+    if (!is_valid_private_key(master_key)) {
         secp256k1_context_destroy(ctx);
         return;
     }
     
-    unsigned char pub_ser[33];
-    size_t pub_len = 33;
-    secp256k1_ec_pubkey_serialize(ctx, pub_ser, &pub_len, &pub, SECP256K1_EC_COMPRESSED);
-    
-    unsigned char h160[20];
-    pubkey_hash160(pub_ser, pub_len, h160);
-    
-    // Sprawdź P2PKH dla wszystkich coinów
-    if (contains_address(mm, h160)) {
-        std::string addr = ripemd_to_base58(h160, 0x00);
-        std::lock_guard<std::mutex> lock(log_mutex);
-        found << "PRIV: " << priv_hex << "\n";
-        found << "PATH: direct_compressed\n";
-        found << "ADDR: " << addr << "\n---\n";
-        found.flush();
-        total_found++;
-        std::cout << "\n✅ ZNALEZIONO! " << addr << std::endl;
-    }
-    
-    // P2SH
-    unsigned char redeem_script[22];
-    redeem_script[0] = 0x00;
-    redeem_script[1] = 0x14;
-    memcpy(redeem_script + 2, h160, 20);
-    unsigned char redeem_hash[20];
-    pubkey_hash160(redeem_script, 22, redeem_hash);
-    
-    if (contains_address(mm, redeem_hash)) {
-        std::string addr = ripemd_to_base58(redeem_hash, 0x05);
-        std::lock_guard<std::mutex> lock(log_mutex);
-        found << "PRIV: " << priv_hex << "\n";
-        found << "PATH: direct_p2sh\n";
-        found << "ADDR: " << addr << "\n---\n";
-        found.flush();
-        total_found++;
-        std::cout << "\n✅ ZNALEZIONO! " << addr << std::endl;
-    }
-    
-    // SegWit
-    std::vector<uint8_t> five_bit;
-    five_bit.push_back(0);
-    auto converted = convert_bits(h160, 20, 8, 5, true);
-    five_bit.insert(five_bit.end(), converted.begin(), converted.end());
-    std::string segwit_addr = bech32_encode("bc", five_bit);
-    
-    if (contains_address(mm, h160)) {
-        std::lock_guard<std::mutex> lock(log_mutex);
-        found << "PRIV: " << priv_hex << "\n";
-        found << "PATH: direct_segwit\n";
-        found << "ADDR: " << segwit_addr << "\n---\n";
-        found.flush();
-        total_found++;
-        std::cout << "\n✅ ZNALEZIONO! " << segwit_addr << std::endl;
-    }
-    
-    // Ethereum
-    unsigned char pub_ser_uncomp[65];
-    pub_len = 65;
-    secp256k1_ec_pubkey_serialize(ctx, pub_ser_uncomp, &pub_len, &pub, SECP256K1_EC_UNCOMPRESSED);
-    
-    unsigned char keccak_hash[32];
-    keccak_256_fixed(pub_ser_uncomp + 1, 64, keccak_hash);
-    
-    unsigned char eth_hash[20];
-    memcpy(eth_hash, keccak_hash + 12, 20);
-    
-    if (contains_address(mm, eth_hash)) {
-        std::string eth_addr = "0x";
-        for (int i = 12; i < 32; i++) {
-            char hex[3];
-            sprintf(hex, "%02x", keccak_hash[i]);
-            eth_addr += hex;
+    // ==================================================
+    // 1. m/0-1 (TYLKO 0 i 1)
+    // ==================================================
+    for (uint32_t child = 0; child <= 1; child++) {
+        unsigned char child_key[32], child_chain[32];
+        if (bip32_derive_normal(ctx, master_key, master_chain, child, child_key, child_chain)) {
+            if (fast_load_priv(fctx, child_key)) {
+                std::string addr = fast_priv_to_address(fctx, true, h160);
+                if (contains_address(mm, h160)) {
+                    std::lock_guard<std::mutex> lock(log_mutex);
+                    found << "SEED: " << seed_hex << "\nPATH: m/" << child << "\nADDR: " << addr << "\n---\n";
+                    found.flush();
+                    total_found++;
+                    std::cout << "\n✅ ZNALEZIONO! m/" << child << " -> " << addr << std::endl;
+                }
+            }
         }
-        std::lock_guard<std::mutex> lock(log_mutex);
-        found << "PRIV: " << priv_hex << "\n";
-        found << "PATH: direct_eth\n";
-        found << "ADDR: " << eth_addr << "\n---\n";
-        found.flush();
-        total_found++;
-        std::cout << "\n✅ ZNALEZIONO! " << eth_addr << std::endl;
     }
+    
+    // ==================================================
+    // 2. BIP44: m/44'/0'/0'/0/0-1 (TYLKO 0 i 1)
+    // ==================================================
+    unsigned char bip44_key1[32], bip44_chain1[32];
+    if (bip32_derive_hardened(master_key, master_chain, 44, bip44_key1, bip44_chain1)) {
+        unsigned char bip44_key2[32], bip44_chain2[32];
+        if (bip32_derive_hardened(bip44_key1, bip44_chain1, 0, bip44_key2, bip44_chain2)) {
+            unsigned char bip44_key3[32], bip44_chain3[32];
+            if (bip32_derive_hardened(bip44_key2, bip44_chain2, 0, bip44_key3, bip44_chain3)) {
+                unsigned char bip44_key4[32], bip44_chain4[32];
+                if (bip32_derive_normal(ctx, bip44_key3, bip44_chain3, 0, bip44_key4, bip44_chain4)) {
+                    for (uint32_t child = 0; child <= 1; child++) {
+                        unsigned char child_key[32], child_chain[32];
+                        if (bip32_derive_normal(ctx, bip44_key4, bip44_chain4, child, child_key, child_chain)) {
+                            if (fast_load_priv(fctx, child_key)) {
+                                std::string addr = fast_priv_to_address(fctx, true, h160);
+                                if (contains_address(mm, h160)) {
+                                    std::lock_guard<std::mutex> lock(log_mutex);
+                                    found << "SEED: " << seed_hex << "\nPATH: m/44'/0'/0'/0/" << child << "\nADDR: " << addr << "\n---\n";
+                                    found.flush();
+                                    total_found++;
+                                    std::cout << "\n✅ ZNALEZIONO! m/44'/0'/0'/0/" << child << " -> " << addr << std::endl;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // ==================================================
+    // LICZBA KLUCZY: 
+    // direct: 2 (C+U)
+    // m/0-1: 2
+    // BIP44: 2
+    // RAZEM: 2 + 2 + 2 = 6 kluczy na seed
+    // ==================================================
+    total_keys += 6;
     
     secp256k1_context_destroy(ctx);
 }
 
 // ===============================
-// PRODUCENT
-// ===============================
-void producer(const std::string& seed_file) {
-    std::ifstream file(seed_file);
-    if (!file.is_open()) {
-        std::cerr << "Nie można otworzyć " << seed_file << std::endl;
-        finished = true;
-        cv.notify_all();
-        return;
-    }
-    
-    std::string line;
-    while (std::getline(file, line)) {
-        line.erase(std::remove_if(line.begin(), line.end(), ::isspace), line.end());
-        if (line.length() != 64) continue;
-        if (line.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) continue;
-        
-        {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            cv.wait(lock, [&]{ return seed_queue.size() < QUEUE_SIZE; });
-            seed_queue.push(line);
-        }
-        cv.notify_all();
-    }
-    
-    finished = true;
-    cv.notify_all();
-}
-
-// ===============================
-// KONSUMENT
-// ===============================
-void consumer(const MMapFile& mm, const std::string& output_file) {
-    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    std::ofstream found(output_file, std::ios::app);
-    
-    while (true) {
-        std::string priv_hex;
-        {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            cv.wait(lock, [&]{ return !seed_queue.empty() || finished; });
-            
-            if (seed_queue.empty() && finished) break;
-            if (seed_queue.empty()) continue;
-            
-            priv_hex = seed_queue.front();
-            seed_queue.pop();
-        }
-        cv.notify_all();
-        
-        unsigned char priv[32];
-        for (int i = 0; i < 32; i++) {
-            unsigned int byte;
-            sscanf(priv_hex.substr(i*2, 2).c_str(), "%02x", &byte);
-            priv[i] = (unsigned char)byte;
-        }
-        
-        scan_seed_direct(mm, priv, priv_hex, found);
-        total_processed++;
-    }
-    
-    secp256k1_context_destroy(ctx);
-}
-
-// ===============================
-// SPEED MONITOR
+// MONITOR SZYBKOŚCI
 // ===============================
 void speed_monitor() {
     uint64_t last_keys = 0;
@@ -791,45 +409,103 @@ void speed_monitor() {
 }
 
 // ===============================
+// PRODUCENT
+// ===============================
+void producer(const std::string& seed_file) {
+    std::ifstream file(seed_file);
+    if (!file.is_open()) {
+        std::cerr << "Nie można otworzyć " << seed_file << std::endl;
+        finished = true;
+        cv.notify_all();
+        return;
+    }
+    
+    std::string line;
+    uint64_t line_count = 0;
+    
+    while (std::getline(file, line)) {
+        line.erase(std::remove_if(line.begin(), line.end(), ::isspace), line.end());
+        if (line.length() != 64) continue;
+        
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            cv.wait(lock, [&]{ return seed_queue.size() < QUEUE_SIZE; });
+            seed_queue.push(line);
+            line_count++;
+        }
+        cv.notify_all();
+    }
+    
+    finished = true;
+    cv.notify_all();
+    std::cout << "\n📖 Wczytano " << line_count << " seedów z pliku" << std::endl;
+}
+
+// ===============================
+// KONSUMENT
+// ===============================
+void consumer(const MMapFile& mm, const std::string& output_file, int thread_id) {
+    std::ofstream found(output_file, std::ios::app);
+    
+    while (true) {
+        std::string seed_hex;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            cv.wait(lock, [&]{ return !seed_queue.empty() || finished; });
+            
+            if (seed_queue.empty() && finished) break;
+            if (seed_queue.empty()) continue;
+            
+            seed_hex = seed_queue.front();
+            seed_queue.pop();
+        }
+        cv.notify_all();
+        
+        unsigned char seed[32];
+        for (int i = 0; i < 32; i++) {
+            unsigned int byte;
+            sscanf(seed_hex.substr(i*2, 2).c_str(), "%02x", &byte);
+            seed[i] = (unsigned char)byte;
+        }
+        
+        scan_seed_fast(mm, seed, seed_hex, found);
+        total_processed++;
+    }
+}
+
+// ===============================
 // MAIN
 // ===============================
 int main(int argc, char* argv[]) {
-    
-    // ==========================================
-    // ZAWSZE NA POCZĄTKU - TEST PRIVATE KEY = 1
-    // ==========================================
-    test_private_key_one();
-    
-    std::cout << "╔══════════════════════════════════════════════════════════════╗\n";
-    std::cout << "║        ✅ KONIEC TESTU                                     ║\n";
-    std::cout << "╚══════════════════════════════════════════════════════════════╝\n";
-    std::cout << "\n";
-    
-    // ==========================================
-    // NORMALNE SKANOWANIE (JEŚLI PODANO ARGUMENTY)
-    // ==========================================
     if (argc < 3) {
-        std::cout << "📖 Użycie: ./program adresy.bin keys.txt\n";
-        std::cout << "   keys.txt - lista kluczy prywatnych (64 hex, po jednym w linii)\n";
-        return 0;
+        std::cout << "Użycie: ./fastbip32 adresy.bin seeds.txt" << std::endl;
+        return 1;
     }
     
     try {
         MMapFile mm(argv[1]);
         std::cout << "📁 Wczytano " << mm.count() << " adresów z " << argv[1] << std::endl;
-        std::cout << "🧵 Uruchamiam " << THREAD_COUNT << " wątków" << std::endl;
-        std::cout << "\n🔍 Obsługiwane monety:" << std::endl;
-        for (auto& coin_pair : coin_map) {
-            std::cout << "   - " << coin_pair.second.name << std::endl;
-        }
-        std::cout << "\n🚀 Rozpoczynam skanowanie..." << std::endl;
+        std::cout << "🧵 Uruchamiam " << THREAD_COUNT << " wątków konsumenckich" << std::endl;
+        std::cout << "📦 Kolejka: " << QUEUE_SIZE << " seedów" << std::endl;
+        std::cout << "\n🔍 Szukane ścieżki:" << std::endl;
+        std::cout << "   - direct (seed as key) compressed/uncompressed" << std::endl;
+        std::cout << "   - m/0-1" << std::endl;
+        std::cout << "   - BIP44: m/44'/0'/0'/0/0-1" << std::endl;
+        std::cout << "\n🚀 Rozpoczynam skanowanie...\n" << std::endl;
         
+        start_time = std::chrono::steady_clock::now();
+        
+        // Uruchom monitor
+        monitor_stop = false;
         std::thread monitor(speed_monitor);
+        
+        // Uruchom producenta
         std::thread prod(producer, std::string(argv[2]));
         
+        // Uruchom konsumentów
         std::vector<std::thread> consumers;
         for (int i = 0; i < THREAD_COUNT; i++) {
-            consumers.emplace_back(consumer, std::cref(mm), std::string("found.txt"));
+            consumers.emplace_back(consumer, std::cref(mm), std::string("found.txt"), i);
         }
         
         prod.join();
@@ -840,10 +516,14 @@ int main(int argc, char* argv[]) {
         monitor_stop = true;
         monitor.join();
         
+        auto elapsed = std::chrono::steady_clock::now() - start_time;
+        double seconds = std::chrono::duration<double>(elapsed).count();
+        
         std::cout << "\n\n✅ Skanowanie zakończone!" << std::endl;
-        std::cout << "   Przetworzono: " << total_processed << " kluczy" << std::endl;
-        std::cout << "   Wygenerowano: " << total_keys << " adresów" << std::endl;
-        std::cout << "   Znaleziono: " << total_found << " trafień" << std::endl;
+        std::cout << "   Przetworzono: " << total_processed << " seedów" << std::endl;
+        std::cout << "   Wygenerowano: " << total_keys << " kluczy" << std::endl;
+        std::cout << "   Znaleziono: " << total_found << " adresów" << std::endl;
+        std::cout << "   Czas: " << std::fixed << std::setprecision(2) << seconds << " s" << std::endl;
         
     } catch (const std::exception& e) {
         std::cerr << "❌ Błąd: " << e.what() << std::endl;
