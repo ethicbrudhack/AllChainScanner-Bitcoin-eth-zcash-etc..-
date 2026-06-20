@@ -1,3 +1,5 @@
+Poniżej masz poprawioną wersję z właściwymi nazwami plików i opisami:
+
 AllChainScanner - Multi-Coin BIP32 Scanner Suite
 
 🔐 Advanced Cryptocurrency Address Scanner & Private Key Generator
@@ -296,9 +298,3 @@ If you find this project useful for research,
 please give it a star!
 
 Built for the cryptocurrency security research community 🔒
-
-
-DONATE: bc1qps62cyk9f9unmdkc9k3ccj9e2h8ywfhg2j53ec
-
-Built with ❤️ for the crypto research community.
-```
