@@ -1,192 +1,302 @@
-Jasne — jeśli chcesz mieć ten opis w formie zwykłego tekstu do wklejenia do konsoli/terminala lub pliku README, możesz skopiować poniższy fragment:
+AllChainScanner - Multi-Coin BIP32 Scanner Suite
 
-```text
-AllChainScanner - Multi-Coin BIP32 Address Scanner
+🔐 Advanced Cryptocurrency Address Scanner & Private Key Generator
 
-🚀 High-Performance Cryptocurrency Address Scanner for 6+ Blockchains
+A comprehensive suite of tools for cryptocurrency address generation, scanning, and private key generation. Designed for educational and security research purposes only.
 
-This project demonstrates a multi-threaded cryptocurrency address scanner that generates addresses from private keys and checks them against a pre-sorted binary database. It supports compressed and uncompressed public keys across 6 major cryptocurrencies.
+⚠️ IMPORTANT: This software is for authorized security testing and educational research only. Do not use for unauthorized wallet access.
 
-⚠️ Educational & Security Research Tool Only
+📦 PACKAGE CONTENTS
 
-This program is not for unauthorized wallet recovery or brute-forcing.
-Use it only for controlled research, security testing, or educational purposes.
+## File                                   Description
 
-📋 OVERVIEW
+PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp
+Main multi-coin BIP32 scanner
+supporting multiple cryptocurrencies.
 
-This tool continuously processes private keys from a text file, derives addresses according to BIP32 standards, and compares them against a memory-mapped binary database of known addresses.
+SPRAWDZPRIVKEY.cpp                     Optimized Bitcoin-only scanner
+that checks only addresses
+starting with "1" (P2PKH).
 
-When a generated address exists in the database, the private key and corresponding address are saved to a results file.
+AddressConverter.cpp                   Converts text addresses into
+binary database format (.bin).
 
-Supported features:
-- Multi-threaded parallel processing (60 threads)
-- 6 cryptocurrencies simultaneously
-- Compressed & uncompressed public key formats
-- Memory-mapped I/O for ultra-fast lookups
-- Binary search for O(log n) comparisons
+generator_hex.cpp                      Generates random private keys
+with entropy between 60 and
+130 bits.
 
-✨ FEATURES
+nowyprostygenerator.cpp                Sequential private key generator.
+Generates one private key after
+another in ascending order.
 
-- Multi-Coin Support:
-  Bitcoin, Litecoin, Dogecoin, Dash, Ethereum, Zcash
+🚀 MAIN SCANNER - PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp
 
-- Address Formats:
-  P2PKH, P2SH, SegWit (Bech32), Ethereum 0x..., Zcash t1/t3
+Features
 
-- Compressed/Uncompressed:
-  Both public key formats supported
+• 6 Cryptocurrencies:
+Bitcoin, Litecoin, Dogecoin, Dash, Ethereum, Zcash
 
-- Parallel Processing:
-  60 concurrent threads for maximum CPU utilization
+• Multiple Address Formats:
+P2PKH, P2SH, SegWit (Bech32), Ethereum 0x...
 
-- Memory Mapping:
-  mmap for fast binary file access
+• Compressed & Uncompressed Keys:
+Both formats checked
 
-- Binary Search:
-  O(log n) database lookups
+• Multi-threaded:
+60 threads for maximum performance
 
-- Speed Monitor:
-  Real-time performance statistics
+• Memory-mapped I/O:
+Fast binary file access
 
-- Test Mode:
-  Built-in test for private key = 1
+• Binary Search:
+O(log n) lookups
 
-SUPPORTED CRYPTOCURRENCIES
+Performance
 
-Bitcoin (BTC):
-  P2PKH, P2SH, SegWit
-  Prefixes: 1..., 3..., bc1...
+• Speed: ~2-5 Mkeys/s (CPU dependent)
+• ~50+ address variants per private key
 
-Litecoin (LTC):
-  P2PKH, P2SH, SegWit
-  Prefixes: L..., M..., ltc1...
+Usage
 
-Dogecoin (DOGE):
-  P2PKH
-  Prefix: D...
+./allchainsanner addresses.bin keys.txt
 
-Dash:
-  P2PKH
-  Prefix: X...
+⚡ BITCOIN-ONLY SCANNER - SPRAWDZPRIVKEY.cpp
 
-Ethereum (ETH):
-  Prefix: 0x...
+Features
 
-Zcash (ZEC):
-  P2PKH, P2SH
-  Prefixes: t1..., t3...
+• Checks only Bitcoin P2PKH addresses
+• Addresses starting with "1"
+• Lightweight implementation
+• Minimal processing overhead
+• Focused single-purpose scanner
 
-📊 PERFORMANCE
+Performance
 
-Processing Speed:
-  2-5 Mkeys/s (CPU dependent)
+• Speed: 0.5+ Mkeys/s
+• Optimized for Bitcoin-only searches
 
-Threads:
-  60
+Supported Paths
 
-Queue Size:
-  200,000 keys
+direct_compressed     - private key (compressed)
+direct_uncompressed   - private key (uncompressed)
+m/0-1                 - BIP32 derivation
+m/44'/0'/0'/0/0-1     - BIP44 derivation
 
-Address Variants per Key:
-  ~50+
+Usage
 
-🔧 INSTALLATION
+./fastbip32 addresses.bin seeds.txt
 
-Ubuntu / Debian:
+📂 ADDRESS CONVERTER - AddressConverter.cpp
 
-sudo apt-get install libssl-dev libsecp256k1-dev build-essential
+Purpose
 
-macOS:
+Converts cryptocurrency addresses from text format into
+a binary database for high-speed scanning.
 
-brew install openssl secp256k1
+Supported Formats
 
-COMPILATION
+• Bitcoin (1..., 3..., bc1...)
+• Litecoin (L..., M..., ltc1...)
+• Dogecoin (D...)
+• Dash (X...)
+• Ethereum (0x...)
+• Zcash (t1..., t3...)
 
-g++ -std=c++17 -O3 -pthread -lssl -lcrypto -lsecp256k1 \
-PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp \
--o allchainsanner
+Output
 
-📖 USAGE
+• adresy.bin
+• Sorted binary database
+• Optimized for binary search
+• Memory-mapped access
 
-./allchainsanner <addresses.bin> <keys.txt>
+Usage
 
-Example:
+./address_converter
 
-./allchainsanner database.bin private_keys.txt
+Input:
+wszystkieadresy_unique.txt
 
-Input file format (keys.txt):
+Output:
+adresy.bin
+
+🔑 PRIVATE KEY GENERATORS
+
+1. generator_hex.cpp
+
+Generates random private keys with configurable entropy.
+
+Features
+
+• Entropy range: 60-130 bits
+• Random private key generation
+• High-speed generation
+• Bulk generation support
+
+Usage
+
+./generator_hex -min 60 -max 130 -n 10000
+./generator_hex -min 60 -max 60 -n 1000
+./generator_hex -f seeds.txt -min 60 -max 130 -n 100000
+
+Options
+
+-min    Minimum entropy bits
+-max    Maximum entropy bits
+-n      Number of keys
+-f      Output file
+
+Example Output
+
+0000000000000000000000000000000000000000000000000000000000a3f5c1
+00000000000000000000000000000000000000000000000000001f3a8b9c2d
+0000000000000000000000000000000000000000000000000a4b8c2d1e3f
+
+2. nowyprostygenerator.cpp
+
+Sequential private key generator.
+
+Features
+
+• Generates private keys sequentially
+• One key after another
+• Predictable ascending generation
+• Lightweight implementation
+• Suitable for controlled testing
+
+Usage
+
+./nowyprostygenerator
+
+Example
 
 0000000000000000000000000000000000000000000000000000000000000001
 0000000000000000000000000000000000000000000000000000000000000002
+0000000000000000000000000000000000000000000000000000000000000003
 
-📁 OUTPUT
+🔧 COMPILATION
 
-Console:
+Prerequisites
 
-📁 Loaded 1,234,567 addresses from database.bin
-🧵 Starting 60 threads
-⚡ 3.45 Mkeys/s | seeds: 15234 | keys: 762,345 | found: 42
+Ubuntu / Debian
 
-found.txt:
+sudo apt-get install libssl-dev libsecp256k1-dev build-essential
 
-PRIV: 0000000000000000000000000000000000000000000000000000000000000001
-PATH: direct_compressed
-ADDR: 1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
----
+macOS
 
-PRIV: 0000000000000000000000000000000000000000000000000000000000000002
-PATH: direct_uncompressed
-ADDR: 1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
----
+brew install openssl secp256k1
 
-🧪 TEST MODE
+Compile All Tools
 
-🔑 TEST FOR PRIVATE KEY = 1 (COMPRESSED + UNCOMPRESSED)
+# Main Scanner
 
-Bitcoin P2PKH (COMPRESSED):
+g++ -std=c++17 -O3 -pthread -lssl -lcrypto -lsecp256k1 
+PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp 
+-o allchainsanner
+
+# Bitcoin Scanner
+
+g++ -std=c++17 -O3 -pthread -lssl -lcrypto -lsecp256k1 
+SPRAWDZPRIVKEY.cpp 
+-o fastbip32
+
+# Address Converter
+
+g++ -std=c++17 -O3 -pthread -lssl -lcrypto 
+AddressConverter.cpp 
+-o address_converter
+
+# Random Key Generator
+
+g++ -std=c++17 -O3 -pthread 
+generator_hex.cpp 
+-o generator_hex
+
+# Sequential Generator
+
+g++ -std=c++17 -O3 -pthread 
+nowyprostygenerator.cpp 
+-o nowyprostygenerator
+
+📊 PERFORMANCE COMPARISON
+
+## Tool                                 Purpose
+
+PROTOTYPGENEROWANIEZTXTWSZYSTKIERODZAJECOIN.cpp
+Multi-coin scanner
+
+SPRAWDZPRIVKEY.cpp                   Bitcoin-only scanner
+
+generator_hex.cpp                    Random key generation
+
+nowyprostygenerator.cpp              Sequential generation
+
+🔍 WORKFLOW EXAMPLE
+
+Step 1: Generate Private Keys
+
+./generator_hex -min 60 -max 130 -n 1000000 -f keys.txt
+
+Step 2: Prepare Address Database
+
+./address_converter
+
+Step 3: Run Scanner
+
+./fastbip32 adresy.bin keys.txt
+
+or
+
+./allchainsanner adresy.bin keys.txt
+
+Step 4: Check Results
+
+cat found.txt
+
+📁 OUTPUT FORMAT
+
+PRIV:
+0000000000000000000000000000000000000000000000000000000000a3f5c1
+
+PATH:
+direct_compressed
+
+ADDR:
 1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
 
-Bitcoin P2PKH (UNCOMPRESSED):
-1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
+---
 
-Bitcoin P2SH:
-3JvL6Ymt8MVWiCNHC7oWU6nLeHNJKLZGLN
-
-Bitcoin SegWit:
-bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4
-
-📦 DEPENDENCIES
-
-- OpenSSL
-- secp256k1
-- pthread
-- keccak_fixed.h
-
-⚠️ DISCLAIMER
+⚠️ LEGAL DISCLAIMER
 
 FOR EDUCATIONAL AND SECURITY RESEARCH PURPOSES ONLY
 
-- This tool is not intended for illegal activities
-- Do not use to access wallets you don't own
-- The author takes no responsibility for misuse
-- Always comply with local laws and regulations
+• This software is provided for authorized testing only
+• Do not use to access wallets you do not own
+• Unauthorized access to cryptocurrency wallets may be illegal
+• The author assumes no responsibility for misuse
+• Users are responsible for complying with local laws
+
+🤝 CONTRIBUTING
+
+Contributions are welcome.
+Submit a Pull Request or open an Issue.
 
 📝 LICENSE
 
 MIT License
 
-🤝 CONTRIBUTING
-
-Contributions are welcome.
-Feel free to submit a Pull Request.
-
-📧 CONTACT
+📞 CONTACT
 
 Author: ethicbrudhack
 
-GitHub: AllChainScanner
+Project: AllChainScanner
 
-⭐ If you find this project useful, please give it a star!
+⭐ SUPPORT
+
+If you find this project useful for research,
+please give it a star!
+
+Built for the cryptocurrency security research community 🔒
+
 
 DONATE: bc1qps62cyk9f9unmdkc9k3ccj9e2h8ywfhg2j53ec
 
