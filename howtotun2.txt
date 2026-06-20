@@ -1,0 +1,56 @@
+# Generuj 100 seedów z 60-130 bitami entropii
+./generator_hex -f seeds60130bit.txt -min 60 -max 130 -n 5303820997 ok 400gb
+
+
+./generator_hex_same_cyfry -f cyfry50DO256.txt -min 50 -max 256 -n 5303820997
+
+
+
+
+
+./losoweseedy ( zmieniasz cyfry/liczby w pliku glownym) 
+
+kompilacja: g++ -O3 -march=native -std=c++17 losoweseedy.cpp -o losoweseedy
+
+
+
+
+
+/nowyprostygenerator -c 0123fabc -l 64 -m 3303820997 -f seeds200gb.txt
+
+
+
+
+./popularneslaberng -f moje_seedyweekgen.txt -n 20
+
+
+
+
+
+
+# Kompilacja
+g++ -O3 -march=native -o weak_generators weak_generators.cpp
+
+
+# 3. Tryb testowy - zapisz do innego pliku
+./popularneslaberng -f moje_seedy.txt -n 20
+
+# 4. Tryb DUŻYCH plików - 100 GB (szybki, tylko LCG 16-bit)
+./popularneslaberng -large
+
+# 5. Tryb DUŻYCH plików - 500 GB
+./popularneslaberng -large -size 500
+
+
+
+
+
+
+
+
+
+
+
+
+
+
