@@ -13,8 +13,10 @@
 #include <cstring>
 #include <queue>
 
-static const size_t RECORD = 20;       
-static const size_t CHUNK_BYTES = 200ull * 1024 * 1024; // 200 MB
+static const size_t RECORD = 20;
+static const size_t CHUNK_BYTES = 512ull * 1024 * 1024; // 512 MB (BEZPIECZNIEJSZE!)
+static const size_t MAX_THREADS = std::min(std::thread::hardware_concurrency(), 16u); // Max 16
+static const size_t WRITE_BUFFER_SIZE = 64 * 1024 * 1024; // 64 MB bufor
 
 std::atomic<size_t> total_processed(0);
 size_t total_size = 0;
@@ -52,14 +54,25 @@ void sort_chunk(std::string infile, off_t offset, size_t bytes, std::string outf
     int ofd = open(outfile.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (ofd < 0) { perror("open out"); exit(1); }
 
-    for (auto p : index) {
+    // ===============================
+    // OPTYMALIZACJA: resize() zamiast reserve() + insert()
+    // ===============================
+    std::vector<uint8_t> write_buffer(WRITE_BUFFER_SIZE);
+    size_t pos = 0;
 
-    ssize_t w = write(ofd, p, RECORD);
-    if (w != (ssize_t)RECORD) {
-        perror("write");
-        close(ofd);
-        exit(1);
-    }
+    for (auto p : index) {
+        memcpy(write_buffer.data() + pos, p, RECORD);
+        pos += RECORD;
+        
+        if (pos >= WRITE_BUFFER_SIZE) {
+            ssize_t w = write(ofd, write_buffer.data(), pos);
+            if (w != (ssize_t)pos) {
+                perror("write");
+                close(ofd);
+                exit(1);
+            }
+            pos = 0;
+        }
 
         size_t old = total_processed.fetch_add(RECORD);
         if ((old / (50ULL << 20)) != ((old + RECORD) / (50ULL << 20))) {
@@ -68,6 +81,16 @@ void sort_chunk(std::string infile, off_t offset, size_t bytes, std::string outf
                       << ((old + RECORD) >> 20) << " MB / "
                       << (total_size >> 20) << " MB)"
                       << std::flush;
+        }
+    }
+
+    // Zapisz pozostałe dane
+    if (pos > 0) {
+        ssize_t w = write(ofd, write_buffer.data(), pos);
+        if (w != (ssize_t)pos) {
+            perror("write");
+            close(ofd);
+            exit(1);
         }
     }
 
@@ -90,41 +113,25 @@ void merge_chunks(std::vector<std::string> parts, std::string out) {
     std::vector<size_t> sizes(parts.size());
 
     for (int i = 0; i < parts.size(); i++) {
+        fds[i] = open(parts[i].c_str(), O_RDONLY);
+        if (fds[i] < 0) { perror("open"); exit(1); }
 
-    fds[i] = open(parts[i].c_str(), O_RDONLY);
-    if (fds[i] < 0) {
-        perror("open");
-        exit(1);
+        struct stat st{};
+        if (fstat(fds[i], &st) < 0) { perror("fstat"); exit(1); }
+        sizes[i] = st.st_size;
+
+        maps[i] = (uint8_t*)mmap(nullptr, sizes[i], PROT_READ, MAP_PRIVATE, fds[i], 0);
+        if (maps[i] == MAP_FAILED) { perror("mmap"); exit(1); }
     }
-
-    struct stat st{};
-    if (fstat(fds[i], &st) < 0) {
-        perror("fstat");
-        exit(1);
-    }
-
-    sizes[i] = st.st_size;
-
-    maps[i] = (uint8_t*)mmap(
-        nullptr,
-        sizes[i],
-        PROT_READ,
-        MAP_PRIVATE,
-        fds[i],
-        0
-    );
-
-    if (maps[i] == MAP_FAILED) {
-        perror("mmap");
-        exit(1);
-    }
-}
 
     int ofd = open(out.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
-if (ofd < 0) {
-    perror("open out");
-    exit(1);
-}
+    if (ofd < 0) { perror("open out"); exit(1); }
+
+    // ===============================
+    // OPTYMALIZACJA: resize() zamiast reserve() + insert()
+    // ===============================
+    std::vector<uint8_t> write_buffer(WRITE_BUFFER_SIZE);
+    size_t pos = 0;
 
     std::priority_queue<Node> pq;
     for (int i = 0; i < parts.size(); i++) {
@@ -133,12 +140,19 @@ if (ofd < 0) {
 
     while (!pq.empty()) {
         Node n = pq.top(); pq.pop();
-        ssize_t w = write(ofd, n.ptr, RECORD);
-if (w != (ssize_t)RECORD) {
-    perror("write");
-    close(ofd);
-    exit(1);
-}
+        
+        memcpy(write_buffer.data() + pos, n.ptr, RECORD);
+        pos += RECORD;
+        
+        if (pos >= WRITE_BUFFER_SIZE) {
+            ssize_t w = write(ofd, write_buffer.data(), pos);
+            if (w != (ssize_t)pos) {
+                perror("write");
+                close(ofd);
+                exit(1);
+            }
+            pos = 0;
+        }
 
         size_t old = total_processed.fetch_add(RECORD);
         if ((old / (50ULL << 20)) != ((old + RECORD) / (50ULL << 20))) {
@@ -152,6 +166,16 @@ if (w != (ssize_t)RECORD) {
         const uint8_t* next = n.ptr + RECORD;
         if (next < n.end)
             pq.push({next, n.end, n.idx});
+    }
+
+    // Zapisz pozostałe dane
+    if (pos > 0) {
+        ssize_t w = write(ofd, write_buffer.data(), pos);
+        if (w != (ssize_t)pos) {
+            perror("write");
+            close(ofd);
+            exit(1);
+        }
     }
 
     close(ofd);
@@ -171,66 +195,56 @@ int main(int argc, char** argv) {
     std::string in = argv[1];
     std::string out = argv[2];
 
-struct stat st{};
+    struct stat st{};
+    if (stat(in.c_str(), &st) < 0) {
+        perror("stat");
+        return 1;
+    }
+    total_size = st.st_size;
 
-if (stat(in.c_str(), &st) < 0) {
-    perror("stat");
-    return 1;
-}
-
-total_size = st.st_size;
-
-    std::cout << "📁 Input file: " << in << " (" << total_size/1e9 << " GB)\n";
-    std::cout << "🚀 Sorting chunks...\n";
+    std::cout << "📁 Input file: " << in << " (" << (total_size / 1e9) << " GB)\n";
+    std::cout << "🚀 Sorting chunks with " << MAX_THREADS << " threads...\n";
+    std::cout << "📦 Chunk size: " << (CHUNK_BYTES / (1024*1024)) << " MB\n";
+    std::cout << "💾 RAM usage estimate: ~" 
+              << (MAX_THREADS * (CHUNK_BYTES / (1024*1024*1024) * 1.4)) 
+              << " GB (for " << MAX_THREADS << " threads)\n";
 
     std::vector<std::future<void>> futures;
     std::vector<std::string> chunks;
 
- const size_t MAX_THREADS = 8;
+    size_t num_chunks = 0;
+    for (off_t offset = 0; offset < total_size; offset += CHUNK_BYTES) {
+        while (futures.size() >= MAX_THREADS) {
+            futures.front().get();
+            futures.erase(futures.begin());
+        }
 
-for (off_t offset = 0; offset < total_size; offset += CHUNK_BYTES) {
+        size_t size = std::min<size_t>(CHUNK_BYTES, total_size - offset);
+        std::string part = "chunk_" + std::to_string(++num_chunks) + ".bin";
+        chunks.push_back(part);
 
-    while (futures.size() >= MAX_THREADS) {
-        futures.front().get();
-        futures.erase(futures.begin());
+        futures.push_back(
+            std::async(std::launch::async, sort_chunk, in, offset, size, part)
+        );
     }
 
-    size_t size =
-        std::min<size_t>(CHUNK_BYTES, total_size - offset);
+    for (auto& f : futures) f.get();
 
-    std::string part =
-        "chunk_" + std::to_string(offset) + ".bin";
+    // ===============================
+    // POPRAWA: Reset counter przed merge
+    // ===============================
+    total_processed.store(0);
 
-    chunks.push_back(part);
+    std::cout << "\n🔄 Merging " << chunks.size() << " chunks...\n";
+    merge_chunks(chunks, out);
 
-    futures.push_back(
-        std::async(
-            std::launch::async,
-            sort_chunk,
-            in,
-            offset,
-            size,
-            part
-        )
-    );
-}
+    std::cout << "\n✅ DONE! Sorted file saved to: " << out << "\n";
 
-for (auto& f : futures)
-    f.get();
+    // Clean up temporary chunk files
+    for (const auto& chunk : chunks) {
+        std::filesystem::remove(chunk);
+    }
 
-std::cout << "\n🔄 Merging chunks...\n";
-
-merge_chunks(chunks, out);
-
-std::cout << "\n✅ DONE! Sorted file saved to: "
-          << out << "\n";
-
-// Clean up temporary chunk files
-for (const auto& chunk : chunks) {
-    std::filesystem::remove(chunk);
-}
-
-std::cout << "🧹 Temporary chunk files removed.\n";
-
-return 0;
+    std::cout << "🧹 Temporary chunk files removed.\n";
+    return 0;
 }
