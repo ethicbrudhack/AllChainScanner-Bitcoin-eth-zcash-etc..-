@@ -627,7 +627,7 @@ void test_private_key_one() {
     std::cout << "  " << (addr_zec_p2sh == "t3bnw6tC26gH7JqRB8YcdbutFtwZP4Xp5o5" ? "✅ OK" : "❌ BŁĄD") << "\n\n";
     
     // ==========================================
-    // 15. ETHEREUM - TEST (Tylko wyświetla, nie szuka w pliku)
+    // 15. ETHEREUM - POPRAWIONE! (Tylko test, NIE SZUKA W PLIKU!)
     // ==========================================
     unsigned char pub_ser_uncomp[65];
     pub_len = 65;
@@ -658,17 +658,20 @@ void test_private_key_one() {
 // ===============================
 // GŁÓWNE SKANOWANIE (WSZYSTKIE MONETY!)
 // ===============================
-void scan_seed_direct(const MMapFile& mm, const unsigned char priv[32], const std::string& priv_hex, std::ofstream& found) {
-    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
+void scan_seed_direct(secp256k1_context* ctx, const MMapFile& mm, 
+                       const unsigned char priv[32], const std::string& priv_hex, 
+                       std::ofstream& found) {
+    // ==========================================
+    // BEZ secp256k1_context_create/destroy!
+    // ==========================================
     
     secp256k1_pubkey pub;
     if (!secp256k1_ec_pubkey_create(ctx, &pub, priv)) {
-        secp256k1_context_destroy(ctx);
         return;
     }
     
     // ==========================================
-    // KOMPRESOWANY PUBKEY
+    // 1. KOMPRESOWANY PUBKEY
     // ==========================================
     unsigned char pub_comp[33];
     size_t pub_len = 33;
@@ -679,8 +682,7 @@ void scan_seed_direct(const MMapFile& mm, const unsigned char priv[32], const st
     total_keys++;
     
     // ==========================================
-    // NIEKOMPRESOWANY PUBKEY
-    // ==========================================
+    // 2. NIEKOMPRESOWANY PUBKEY    // ==========================================
     unsigned char pub_uncomp[65];
     pub_len = 65;
     secp256k1_ec_pubkey_serialize(ctx, pub_uncomp, &pub_len, &pub, SECP256K1_EC_UNCOMPRESSED);
@@ -690,68 +692,7 @@ void scan_seed_direct(const MMapFile& mm, const unsigned char priv[32], const st
     total_keys++;
     
     // ==========================================
-    // 1. SPRAWDŹ KOMPRESOWANY P2PKH - WSZYSTKIE MONETY!
-    // ==========================================
-    if (contains_address(mm, h160_comp)) {
-        std::string addr_btc = ripemd_to_base58(h160_comp, 0x00);
-        std::lock_guard<std::mutex> lock(log_mutex);
-        found << "PRIV: " << priv_hex << "\n";
-        found << "PATH: direct_compressed\n";
-        found << "BTC: " << addr_btc << "\n";
-        
-        std::string addr_ltc = ripemd_to_base58(h160_comp, 0x30);
-        found << "LTC: " << addr_ltc << "\n";
-        
-        std::string addr_doge = ripemd_to_base58(h160_comp, 0x1E);
-        found << "DOGE: " << addr_doge << "\n";
-        
-        std::string addr_dash = ripemd_to_base58(h160_comp, 0x4C);
-        found << "DASH: " << addr_dash << "\n";
-        
-        std::string addr_zec = zcash_to_base58(h160_comp, 0x1C, 0xB8);
-        found << "ZEC: " << addr_zec << "\n";
-        found << "---\n";
-        found.flush();
-        
-        total_found += 5;
-        std::cout << "\n✅ ZNALEZIONO! (compressed) BTC: " << addr_btc 
-                  << " | LTC: " << addr_ltc 
-                  << " | DOGE: " << addr_doge 
-                  << " | DASH: " << addr_dash 
-                  << " | ZEC: " << addr_zec << std::endl;
-    }
-    
-    // ==========================================
-    // 2. SPRAWDŹ NIEKOMPRESOWANY P2PKH - WSZYSTKIE MONETY!
-    // ==========================================
-    if (contains_address(mm, h160_uncomp)) {
-        std::string addr_btc = ripemd_to_base58(h160_uncomp, 0x00);
-        std::string addr_ltc = ripemd_to_base58(h160_uncomp, 0x30);
-        std::string addr_doge = ripemd_to_base58(h160_uncomp, 0x1E);
-        std::string addr_dash = ripemd_to_base58(h160_uncomp, 0x4C);
-        std::string addr_zec = zcash_to_base58(h160_uncomp, 0x1C, 0xB8);
-        
-        std::lock_guard<std::mutex> lock(log_mutex);
-        found << "PRIV: " << priv_hex << "\n";
-        found << "PATH: direct_uncompressed\n";
-        found << "BTC: " << addr_btc << "\n";
-        found << "LTC: " << addr_ltc << "\n";
-        found << "DOGE: " << addr_doge << "\n";
-        found << "DASH: " << addr_dash << "\n";
-        found << "ZEC: " << addr_zec << "\n";
-        found << "---\n";
-        found.flush();
-        
-        total_found += 5;
-        std::cout << "\n✅ ZNALEZIONO! (uncompressed) BTC: " << addr_btc 
-                  << " | LTC: " << addr_ltc 
-                  << " | DOGE: " << addr_doge 
-                  << " | DASH: " << addr_dash 
-                  << " | ZEC: " << addr_zec << std::endl;
-    }
-    
-    // ==========================================
-    // 3. P2SH (3..., M..., t3...) - WSZYSTKIE MONETY!
+    // 3. P2SH (3...) - OSOBNY HASH!
     // ==========================================
     unsigned char redeem_script[22];
     redeem_script[0] = 0x00;
@@ -761,88 +702,112 @@ void scan_seed_direct(const MMapFile& mm, const unsigned char priv[32], const st
     pubkey_hash160(redeem_script, 22, redeem_hash);
     total_keys++;
     
-    if (contains_address(mm, redeem_hash)) {
-        std::string addr_btc = ripemd_to_base58(redeem_hash, 0x05);
-        std::string addr_ltc = ripemd_to_base58(redeem_hash, 0x32);
-        std::string addr_zec = zcash_to_base58(redeem_hash, 0x1C, 0xBD);
-        
-        std::lock_guard<std::mutex> lock(log_mutex);
-        found << "PRIV: " << priv_hex << "\n";
-        found << "PATH: direct_p2sh\n";
-        found << "BTC P2SH: " << addr_btc << "\n";
-        found << "LTC P2SH: " << addr_ltc << "\n";
-        found << "ZEC P2SH: " << addr_zec << "\n";
-        found << "---\n";
-        found.flush();
-        
-        total_found += 3;
-        std::cout << "\n✅ ZNALEZIONO! (p2sh) BTC: " << addr_btc 
-                  << " | LTC: " << addr_ltc 
-                  << " | ZEC: " << addr_zec << std::endl;
-    }
-    
     // ==========================================
-    // 4. SEGWIT (bc1..., ltc1...) - WSZYSTKIE MONETY!
+    // 4. ETH - OSOBNY HASH!
     // ==========================================
-    std::vector<uint8_t> five_bit;
-    five_bit.push_back(0);
-    auto converted = convert_bits(h160_comp, 20, 8, 5, true);
-    five_bit.insert(five_bit.end(), converted.begin(), converted.end());
-    total_keys++;
-    
-    if (contains_address(mm, h160_comp)) {
-        std::string addr_btc = bech32_encode("bc", five_bit);
-        std::string addr_ltc = bech32_encode("ltc", five_bit);
-        std::string addr_doge = bech32_encode("doge", five_bit);
-        
-        std::lock_guard<std::mutex> lock(log_mutex);
-        found << "PRIV: " << priv_hex << "\n";
-        found << "PATH: direct_segwit\n";
-        found << "BTC SegWit: " << addr_btc << "\n";
-        found << "LTC SegWit: " << addr_ltc << "\n";
-        found << "DOGE SegWit: " << addr_doge << "\n";
-        found << "---\n";
-        found.flush();
-        
-        total_found += 3;
-        std::cout << "\n✅ ZNALEZIONO! (segwit) BTC: " << addr_btc 
-                  << " | LTC: " << addr_ltc 
-                  << " | DOGE: " << addr_doge << std::endl;
-    }
-    
-    // ==========================================
-    // 5. ETHEREUM - SZUKA TAK JAK W ADRESTOBIN!
-    // ==========================================
-    unsigned char pub_ser_uncomp[65];
+    unsigned char pub_eth[65];
     pub_len = 65;
-    secp256k1_ec_pubkey_serialize(ctx, pub_ser_uncomp, &pub_len, &pub, SECP256K1_EC_UNCOMPRESSED);
+    secp256k1_ec_pubkey_serialize(ctx, pub_eth, &pub_len, &pub, SECP256K1_EC_UNCOMPRESSED);
     
     unsigned char keccak_hash[32];
-    keccak_256_fixed(pub_ser_uncomp + 1, 64, keccak_hash);
+    keccak_256_fixed(pub_eth + 1, 64, keccak_hash);
     
-    // SZUKAMY 20 BAJTÓW ADRESU (tak jak w adresy.bin!)
     unsigned char eth_hash[20];
     memcpy(eth_hash, keccak_hash + 12, 20);
     total_keys++;
     
-    if (contains_address(mm, eth_hash)) {
+    // ==========================================
+    // SPRAWDŹ TYLKO 3 HASHE!
+    // ==========================================
+    bool found_comp = contains_address(mm, h160_comp);
+    bool found_uncomp = contains_address(mm, h160_uncomp);
+    bool found_p2sh = contains_address(mm, redeem_hash);
+    bool found_eth = contains_address(mm, eth_hash);
+    
+    // ==========================================
+    // KOMPRESOWANY - ZNALAZŁ?
+    // ==========================================
+    if (found_comp) {
+        std::lock_guard<std::mutex> lock(log_mutex);
+        found << "PRIV: " << priv_hex << "\nPATH: direct_compressed\n";
+        
+        // Bitcoin P2PKH (1...)
+        found << "BTC: " << ripemd_to_base58(h160_comp, 0x00) << "\n";
+        // Litecoin P2PKH (L...)
+        found << "LTC: " << ripemd_to_base58(h160_comp, 0x30) << "\n";
+        // Dogecoin P2PKH (D...)
+        found << "DOGE: " << ripemd_to_base58(h160_comp, 0x1E) << "\n";
+        // Dash P2PKH (X...)
+        found << "DASH: " << ripemd_to_base58(h160_comp, 0x4C) << "\n";
+        // Zcash P2PKH (t1...)
+        found << "ZEC: " << zcash_to_base58(h160_comp, 0x1C, 0xB8) << "\n";
+        // SegWit (bc1...) - TEN SAM HASH!
+        std::vector<uint8_t> five_bit;
+        five_bit.push_back(0);
+        auto converted = convert_bits(h160_comp, 20, 8, 5, true);
+        five_bit.insert(five_bit.end(), converted.begin(), converted.end());
+        found << "SEGWIT: " << bech32_encode("bc", five_bit) << "\n";
+        found << "---\n";
+        found.flush();
+        
+        total_found += 6;
+        std::cout << "\n✅ ZNALEZIONO! (compressed) 6 adresów!" << std::endl;
+    }
+    
+    // ==========================================
+    // NIEKOMPRESOWANY - ZNALAZŁ?
+    // ==========================================
+    if (found_uncomp) {
+        std::lock_guard<std::mutex> lock(log_mutex);
+        found << "PRIV: " << priv_hex << "\nPATH: direct_uncompressed\n";
+        found << "BTC: " << ripemd_to_base58(h160_uncomp, 0x00) << "\n";
+        found << "LTC: " << ripemd_to_base58(h160_uncomp, 0x30) << "\n";
+        found << "DOGE: " << ripemd_to_base58(h160_uncomp, 0x1E) << "\n";
+        found << "DASH: " << ripemd_to_base58(h160_uncomp, 0x4C) << "\n";
+        found << "ZEC: " << zcash_to_base58(h160_uncomp, 0x1C, 0xB8) << "\n";
+        found << "---\n";
+        found.flush();
+        total_found += 5;
+        std::cout << "\n✅ ZNALEZIONO! (uncompressed) 5 adresów!" << std::endl;
+    }
+    
+    // ==========================================
+    // P2SH - ZNALAZŁ?
+    // ==========================================
+    if (found_p2sh) {
+        std::lock_guard<std::mutex> lock(log_mutex);
+        found << "PRIV: " << priv_hex << "\nPATH: direct_p2sh\n";
+        found << "BTC P2SH: " << ripemd_to_base58(redeem_hash, 0x05) << "\n";
+        found << "LTC P2SH: " << ripemd_to_base58(redeem_hash, 0x32) << "\n";
+        found << "ZEC P2SH: " << zcash_to_base58(redeem_hash, 0x1C, 0xBD) << "\n";
+        found << "---\n";
+        found.flush();
+        total_found += 3;
+        std::cout << "\n✅ ZNALEZIONO! (p2sh) 3 adresy!" << std::endl;
+    }
+    
+    // ==========================================
+    // ETH - ZNALAZŁ?
+    // ==========================================
+    if (found_eth) {
         std::string eth_addr = "0x";
         for (int i = 12; i < 32; i++) {
             char hex[3];
             sprintf(hex, "%02x", keccak_hash[i]);
             eth_addr += hex;
         }
-        
         std::lock_guard<std::mutex> lock(log_mutex);
-        found << "PRIV: " << priv_hex << "\n";
-        found << "PATH: direct_eth\n";
+        found << "PRIV: " << priv_hex << "\nPATH: direct_eth\n";
         found << "ETH: " << eth_addr << "\n---\n";
         found.flush();
         total_found++;
         std::cout << "\n✅ ZNALEZIONO! (eth) " << eth_addr << std::endl;
     }
     
-    secp256k1_context_destroy(ctx);
+    // ==========================================
+    // KONTEKST NIE JEST NISZCZONY - NISZCZY GO KONSUMENT!
+    // ==========================================
+    // BEZ secp256k1_context_destroy(ctx);
 }
 
 // ===============================
@@ -879,6 +844,9 @@ void producer(const std::string& seed_file) {
 // KONSUMENT
 // ===============================
 void consumer(const MMapFile& mm, const std::string& output_file) {
+    // ==========================================
+    // KONTEKST TWORZONY RAZ!
+    // ==========================================
     secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
     std::ofstream found(output_file, std::ios::app);
     
@@ -903,10 +871,16 @@ void consumer(const MMapFile& mm, const std::string& output_file) {
             priv[i] = (unsigned char)byte;
         }
         
-        scan_seed_direct(mm, priv, priv_hex, found);
+        // ==========================================
+        // PRZEKAZUJEMY KONTEKST!
+        // ==========================================
+        scan_seed_direct(ctx, mm, priv, priv_hex, found);
         total_processed++;
     }
     
+    // ==========================================
+    // KONTEKST NISZCZONY RAZ!
+    // ==========================================
     secp256k1_context_destroy(ctx);
 }
 
