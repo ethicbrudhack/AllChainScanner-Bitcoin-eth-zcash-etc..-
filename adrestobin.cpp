@@ -17,9 +17,6 @@
 
 const char* BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-// ============================================================
-// STRUKTURA DLA COINÓW
-// ============================================================
 struct CoinInfo {
     std::string name;
     std::string prefix;
@@ -46,9 +43,6 @@ std::vector<CoinInfo> COINS = {
     {"Ethereum", "0x", {}, false, false, ""}
 };
 
-// ============================================================
-// SHA256d
-// ============================================================
 bool verify_checksum(const std::vector<unsigned char>& data) {
     if (data.size() < 4) return false;
     unsigned char hash1[SHA256_DIGEST_LENGTH];
@@ -94,16 +88,19 @@ bool base58_decode_20(const std::string& input, std::vector<unsigned char>& outp
         }
     }
     
-    if (!found) detected_coin = COINS[0];
+    if (!found) return false;
     
     int leading_zeros = 0;
     while (leading_zeros < input.size() && input[leading_zeros] == '1') leading_zeros++;
     
-    std::vector<unsigned char> temp(32, 0);
+    // ============================================================
+    // PRAWIDŁOWE DEKODOWANIE BASE58
+    // ============================================================
+    std::vector<unsigned char> temp(64, 0);
     for (char c : input) {
         int carry = base58_char_value(c);
         if (carry == -1) return false;
-        for (int i = 31; i >= 0; i--) {
+        for (int i = 63; i >= 0; i--) {
             carry += 58 * temp[i];
             temp[i] = carry & 0xFF;
             carry >>= 8;
@@ -121,18 +118,49 @@ bool base58_decode_20(const std::string& input, std::vector<unsigned char>& outp
     
     int version_bytes = detected_coin.is_zcash_style ? 2 : 1;
     int expected_size = version_bytes + 20 + 4;
-    if (payload.size() < expected_size) return false;
     
+    // ============================================================
+    // KRYTYCZNA POPRAWKA: Sprawdzamy czy payload ma DOKŁADNIE expected_size
+    // ============================================================
+    if (payload.size() < (size_t)expected_size) return false;
+    
+    // Jeśli payload jest większy, bierzemy OSTATNIE expected_size
     std::vector<unsigned char> decoded(payload.end() - expected_size, payload.end());
+    
+    // Alternatywnie: jeśli payload ma dokładnie expected_size, używamy go
+    // if (payload.size() == expected_size) {
+    //     decoded = payload;
+    // } else {
+    //     decoded.assign(payload.end() - expected_size, payload.end());
+    // }
+    
+    if (decoded.size() != (size_t)expected_size) return false;
+    
+    if (decoded.size() < (size_t)(version_bytes + 20 + 4)) return false;
+    
+    // ============================================================
+    // WERYFIKACJA VERSION BYTES
+    // ============================================================
+    bool version_ok = true;
+    for (int i = 0; i < version_bytes; i++) {
+        if (i >= (int)detected_coin.version_bytes.size()) {
+            version_ok = false;
+            break;
+        }
+        if (decoded[i] != detected_coin.version_bytes[i]) {
+            version_ok = false;
+            break;
+        }
+    }
+    
+    if (!version_ok) return false;
+    
     if (!verify_checksum(decoded)) return false;
     
     output.assign(decoded.begin() + version_bytes, decoded.begin() + version_bytes + 20);
     return output.size() == 20;
 }
 
-// ============================================================
-// BECH32
-// ============================================================
 const std::string CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
 int bech32_polymod_step(int pre) {
@@ -194,12 +222,10 @@ bool bech32_decode(const std::string& addr, std::vector<unsigned char>& output) 
         }
     }
     if (bits >= 5) return false;
-    return output.size() == 20 || output.size() == 32;
+    
+    return output.size() == 20;
 }
 
-// ============================================================
-// ETH
-// ============================================================
 bool eth_decode(const std::string& addr, std::vector<unsigned char>& output) {
     if (addr.size() != 42) return false;
     if (!(addr.rfind("0x", 0) == 0 || addr.rfind("0X", 0) == 0)) return false;
@@ -207,7 +233,7 @@ bool eth_decode(const std::string& addr, std::vector<unsigned char>& output) {
     std::string hex = addr.substr(2);
     if (hex.size() != 40) return false;
     
-    std::vector<unsigned char> raw(20);
+    output.resize(20);
     for (size_t i = 0; i < 20; i++) {
         char hi = hex[i * 2];
         char lo = hex[i * 2 + 1];
@@ -220,20 +246,11 @@ bool eth_decode(const std::string& addr, std::vector<unsigned char>& output) {
         int h = cvt(hi);
         int l = cvt(lo);
         if (h < 0 || l < 0) return false;
-        raw[i] = (h << 4) | l;
+        output[i] = (h << 4) | l;
     }
-    
-    unsigned char sha_hash[SHA256_DIGEST_LENGTH];
-    SHA256(raw.data(), 20, sha_hash);
-    unsigned char ripemd_hash[RIPEMD160_DIGEST_LENGTH];
-    RIPEMD160(sha_hash, SHA256_DIGEST_LENGTH, ripemd_hash);
-    output.assign(ripemd_hash, ripemd_hash + 20);
     return true;
 }
 
-// ============================================================
-// ROZPOZNAWANIE TYPU
-// ============================================================
 enum AddressType { TYPE_BASE58, TYPE_BECH32, TYPE_ETH, TYPE_UNKNOWN };
 
 AddressType detect_type(const std::string& addr) {
@@ -283,42 +300,65 @@ bool decode_address(const std::string& addr, std::vector<unsigned char>& output,
     return success && output.size() == 20;
 }
 
-// ============================================================
-// MMAP - SZYBKI ODCZYT PLIKU
-// ============================================================
+// ============================================
+// MMAPFILE
+// ============================================
 class MMapFile {
 public:
-    MMapFile(const char* path) {
+    MMapFile(const char* path) : fd(-1), size(0), data(nullptr) {
         fd = ::open(path, O_RDONLY);
         if (fd < 0) throw std::runtime_error("open failed");
+        
         struct stat st{};
-        if (fstat(fd, &st) != 0) throw std::runtime_error("fstat failed");
+        if (fstat(fd, &st) != 0) {
+            close(fd);
+            fd = -1;
+            throw std::runtime_error("fstat failed");
+        }
+        
         size = st.st_size;
+        if (size == 0) {
+            close(fd);
+            fd = -1;
+            throw std::runtime_error("empty file");
+        }
+        
         data = (const char*)mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
-        if (data == MAP_FAILED) throw std::runtime_error("mmap failed");
+        if (data == MAP_FAILED) {
+            data = nullptr;
+            close(fd);
+            fd = -1;
+            throw std::runtime_error("mmap failed");
+        }
     }
+    
     ~MMapFile() {
-        if (data) munmap((void*)data, size);
-        if (fd >= 0) close(fd);
+        if (data && size > 0) {
+            munmap((void*)data, size);
+            data = nullptr;
+        }
+        if (fd >= 0) {
+            close(fd);
+            fd = -1;
+        }
     }
+    
     const char* ptr() const { return data; }
     size_t length() const { return size; }
+    
 private:
     int fd;
     size_t size;
     const char* data;
 };
 
-// ============================================================
-// PRZETWARZANIE - SZYBKIE
-// ============================================================
 void process_mmap(const MMapFile& mm, std::ofstream& fout_bin, std::atomic<uint64_t>& processed, std::atomic<uint64_t>& found) {
     const char* start = mm.ptr();
     const char* end = start + mm.length();
     const char* p = start;
     
     std::vector<unsigned char> buffer_bin;
-    buffer_bin.reserve(1000000 * 20); // 1M adresów w buforze
+    buffer_bin.reserve(1000000 * 20);
     
     std::vector<unsigned char> hash160;
     std::string coin_name;
@@ -339,7 +379,7 @@ void process_mmap(const MMapFile& mm, std::ofstream& fout_bin, std::atomic<uint6
             }
             processed++;
             
-            if (buffer_bin.size() >= 20 * 1000000) { // 1M adresów
+            if (buffer_bin.size() >= 20 * 1000000) {
                 fout_bin.write((const char*)buffer_bin.data(), buffer_bin.size());
                 buffer_bin.clear();
                 std::cout << "\rProcessed: " << processed.load() 
@@ -349,20 +389,15 @@ void process_mmap(const MMapFile& mm, std::ofstream& fout_bin, std::atomic<uint6
             }
         }
         
-        // Pomijamy \r\n
         if (p < end && *p == '\r') p++;
         if (p < end && *p == '\n') p++;
     }
     
-    // Zapisz resztę
     if (!buffer_bin.empty()) {
         fout_bin.write((const char*)buffer_bin.data(), buffer_bin.size());
     }
 }
 
-// ============================================================
-// MAIN
-// ============================================================
 int main(int argc, char* argv[]) {
     std::string input_file = "wszystkieadresy_sorted1.txt";
     std::string output_file = "adresy.bin";
