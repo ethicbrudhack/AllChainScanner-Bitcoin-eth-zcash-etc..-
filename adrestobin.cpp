@@ -8,8 +8,50 @@
 #include <cstring>
 #include <algorithm>
 #include <openssl/sha.h>
+#include <openssl/ripemd.h>
+#include <openssl/evp.h>
 
 const char* BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+// ============================================================
+// STRUKTURA DLA COINÓW
+// ============================================================
+struct CoinInfo {
+    std::string name;
+    std::string prefix;
+    std::vector<uint8_t> version_bytes;  // Może być 1 lub 2 bajty
+    bool is_zcash_style;  // Zcash ma 2-bajtową wersję
+    bool is_bech32;
+    std::string bech32_hrp;
+};
+
+std::vector<CoinInfo> COINS = {
+    // Bitcoin
+    {"Bitcoin_P2PKH", "1", {0x00}, false, false, ""},
+    {"Bitcoin_P2SH", "3", {0x05}, false, false, ""},
+    {"Bitcoin_Bech32", "bc1", {}, false, true, "bc"},
+    
+    // Litecoin
+    {"Litecoin_P2PKH", "L", {0x30}, false, false, ""},
+    {"Litecoin_P2SH", "M", {0x32}, false, false, ""},
+    {"Litecoin_Bech32", "ltc1", {}, false, true, "ltc"},
+    
+    // Dogecoin
+    {"Dogecoin_P2PKH", "D", {0x1E}, false, false, ""},
+    {"Dogecoin_P2SH", "A", {0x16}, false, false, ""},  // Dogecoin P2SH to "A" lub "9"
+    {"Dogecoin_Bech32", "doge1", {}, false, true, "doge"},
+    
+    // Dash
+    {"Dash_P2PKH", "X", {0x4C}, false, false, ""},
+    {"Dash_P2SH", "7", {0x10}, false, false, ""},
+    
+    // Zcash (2-bajtowa wersja!)
+    {"Zcash_P2PKH", "t1", {0x1C, 0xB8}, true, false, ""},
+    {"Zcash_P2SH", "t3", {0x1C, 0xBD}, true, false, ""},
+    
+    // Ethereum (specjalne)
+    {"Ethereum", "0x", {}, false, false, ""}
+};
 
 // ============================================================
 // SHA256d - do weryfikacji checksum Base58
@@ -32,28 +74,62 @@ bool verify_checksum(const std::vector<unsigned char>& data) {
 }
 
 // ============================================================
-// DEKODOWANIE BASE58
+// DEKODOWANIE BASE58 - UNIWERSALNE
 // ============================================================
 int base58_char_value(char c) {
     const char* p = strchr(BASE58_ALPHABET, c);
     return p ? p - BASE58_ALPHABET : -1;
 }
 
-bool base58_decode_20(const std::string& input, std::vector<unsigned char>& output) {
-    // 1. Oblicz leading zeros
-    int leading_zeros = 0;
-    for (char c : input) {
-        if (c == '1') leading_zeros++;
-        else break;
+bool base58_decode_20(const std::string& input, std::vector<unsigned char>& output, CoinInfo& detected_coin) {
+    if (input.empty()) return false;
+    
+    // 1. Wykryj coin po prefiksie
+    detected_coin = {"Unknown", "", {0x00}, false, false, ""};
+    bool found = false;
+    
+    for (const auto& coin : COINS) {
+        if (coin.is_bech32) continue;
+        if (coin.prefix.empty()) continue;
+        
+        if (input.compare(0, coin.prefix.length(), coin.prefix) == 0) {
+            detected_coin = coin;
+            found = true;
+            break;
+        }
     }
     
-    // 2. Dekoduj Base58
+    if (!found) {
+        // Spróbuj wykryć po pierwszym znaku
+        std::string first_char = input.substr(0, 1);
+        for (const auto& coin : COINS) {
+            if (coin.is_bech32) continue;
+            if (coin.prefix == first_char) {
+                detected_coin = coin;
+                found = true;
+                break;
+            }
+        }
+    }
+    
+    if (!found) {
+        // Dla nieznanych - spróbuj jako Bitcoin
+        detected_coin = COINS[0]; // Bitcoin_P2PKH
+    }
+    
+    // 2. Policz leading '1'
+    int leading_zeros = 0;
+    while (leading_zeros < input.size() && input[leading_zeros] == '1') {
+        leading_zeros++;
+    }
+    
+    // 3. Dekoduj Base58
     std::vector<unsigned char> temp(32, 0);
     for (char c : input) {
         int carry = base58_char_value(c);
         if (carry == -1) return false;
         
-        for (int i = 31; i >= 0; --i) {
+        for (int i = 31; i >= 0; i--) {
             carry += 58 * temp[i];
             temp[i] = carry & 0xFF;
             carry >>= 8;
@@ -61,17 +137,9 @@ bool base58_decode_20(const std::string& input, std::vector<unsigned char>& outp
         if (carry != 0) return false;
     }
     
-    // 3. Znajdź pierwszy niezerowy bajt
-    size_t start = 0;
+    // 4. Znajdź pierwszy niezerowy
+    int start = 0;
     while (start < temp.size() && temp[start] == 0) start++;
-    
-    // 4. Określ wersję (Zcash ma 2 bajty)
-    int version_bytes = 1;
-    bool is_zcash = false;
-    if (input.size() > 1 && input[0] == 't' && (input[1] == '1' || input[1] == '3')) {
-        is_zcash = true;
-        version_bytes = 2;
-    }
     
     // 5. Zbuduj payload
     std::vector<unsigned char> payload;
@@ -80,34 +148,32 @@ bool base58_decode_20(const std::string& input, std::vector<unsigned char>& outp
     for (int i = 0; i < leading_zeros; i++) {
         payload.push_back(0x00);
     }
-    for (size_t i = start; i < temp.size(); i++) {
+    for (int i = start; i < temp.size(); i++) {
         payload.push_back(temp[i]);
     }
     
-    // 6. Sprawdź długość
-    size_t expected_size = version_bytes + 20 + 4;
+    // 6. Określ rozmiar wersji
+    int version_bytes = detected_coin.is_zcash_style ? 2 : 1;
+    int expected_size = version_bytes + 20 + 4; // wersja + hash + checksum
+    
     if (payload.size() < expected_size) return false;
     
-    // 7. Weź OSTATNIE 25 (lub 26) bajtów
-    std::vector<unsigned char> decoded_payload(
+    // 7. Pobierz OSTATNIE expected_size bajtów
+    std::vector<unsigned char> decoded(
         payload.end() - expected_size,
         payload.end()
     );
     
     // 8. Sprawdź checksum
-    if (!verify_checksum(decoded_payload)) return false;
+    if (!verify_checksum(decoded)) return false;
     
-    // 9. Wyciągnij 20 bajtów hash
-    output.assign(
-        decoded_payload.begin() + version_bytes,
-        decoded_payload.begin() + version_bytes + 20
-    );
-    
-    return true;
+    // 9. Wyciągnij 20 bajtów hash (pomijając wersję)
+    output.assign(decoded.begin() + version_bytes, decoded.begin() + version_bytes + 20);
+    return output.size() == 20;
 }
 
 // ============================================================
-// DEKODOWANIE BECH32
+// DEKODOWANIE BECH32 - UNIWERSALNE
 // ============================================================
 const std::string CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
@@ -180,8 +246,8 @@ bool bech32_decode(const std::string& addr, std::vector<unsigned char>& output) 
     }
     if (bits >= 5) return false;
     
-    // Tylko P2WPKH (20 bajtów)
-    return output.size() == 20;
+    // Akceptuj P2WPKH (20) i P2WSH (32)
+    return output.size() == 20 || output.size() == 32;
 }
 
 // ============================================================
@@ -194,7 +260,7 @@ bool eth_decode(const std::string& addr, std::vector<unsigned char>& output) {
     std::string hex = addr.substr(2);
     if (hex.size() != 40) return false;
     
-    output.resize(20);
+    std::vector<unsigned char> raw(20);
     for (size_t i = 0; i < 20; i++) {
         char hi = hex[i * 2];
         char lo = hex[i * 2 + 1];
@@ -209,8 +275,17 @@ bool eth_decode(const std::string& addr, std::vector<unsigned char>& output) {
         int h = cvt(hi);
         int l = cvt(lo);
         if (h < 0 || l < 0) return false;
-        output[i] = (h << 4) | l;
+        raw[i] = (h << 4) | l;
     }
+    
+    // Konwertuj na hash160 (SHA256 + RIPEMD160)
+    unsigned char sha_hash[SHA256_DIGEST_LENGTH];
+    SHA256(raw.data(), 20, sha_hash);
+    
+    unsigned char ripemd_hash[RIPEMD160_DIGEST_LENGTH];
+    RIPEMD160(sha_hash, SHA256_DIGEST_LENGTH, ripemd_hash);
+    
+    output.assign(ripemd_hash, ripemd_hash + 20);
     return true;
 }
 
@@ -232,17 +307,57 @@ AddressType detect_type(const std::string& addr) {
         return TYPE_ETH;
     }
     
-    if (addr.substr(0, 3) == "bc1" || 
-        addr.substr(0, 4) == "ltc1" ||
-        addr.substr(0, 3) == "tb1") {
-        return TYPE_BECH32;
+    // Wykryj Bech32 dla wszystkich coinów
+    if (addr.find('1') != std::string::npos) {
+        for (const auto& coin : COINS) {
+            if (coin.is_bech32 && addr.find(coin.bech32_hrp) == 0) {
+                return TYPE_BECH32;
+            }
+        }
     }
     
     return TYPE_BASE58;
 }
 
 // ============================================================
-// PRZETWARZANIE CHUNKÓW - TYLKO BIN
+// DEKODOWANIE Z WYKRYCIEM COINA
+// ============================================================
+bool decode_address(const std::string& addr, std::vector<unsigned char>& output, std::string& coin_name) {
+    AddressType type = detect_type(addr);
+    CoinInfo detected_coin;
+    bool success = false;
+    
+    switch (type) {
+        case TYPE_BASE58:
+            success = base58_decode_20(addr, output, detected_coin);
+            if (success) coin_name = detected_coin.name;
+            break;
+        case TYPE_BECH32:
+            success = bech32_decode(addr, output);
+            if (success) {
+                // Znajdź nazwę coina
+                for (const auto& coin : COINS) {
+                    if (coin.is_bech32 && addr.find(coin.bech32_hrp) == 0) {
+                        coin_name = coin.name;
+                        break;
+                    }
+                }
+            }
+            break;
+        case TYPE_ETH:
+            success = eth_decode(addr, output);
+            if (success) coin_name = "Ethereum";
+            break;
+        case TYPE_UNKNOWN:
+            success = false;
+            break;
+    }
+    
+    return success && output.size() == 20;
+}
+
+// ============================================================
+// PRZETWARZANIE CHUNKÓW
 // ============================================================
 void process_chunk(const std::vector<std::string>& lines,
                    size_t start_idx,
@@ -256,33 +371,18 @@ void process_chunk(const std::vector<std::string>& lines,
     buffer_bin.reserve((end_idx - start_idx) * 20);
     
     std::vector<unsigned char> hash160;
+    std::string coin_name;
     
     for (size_t i = start_idx; i < end_idx; ++i) {
         const std::string& line = lines[i];
         if (line.empty()) continue;
         
-        AddressType type = detect_type(line);
-        bool success = false;
-        
-        switch (type) {
-            case TYPE_BASE58:
-                success = base58_decode_20(line, hash160);
-                break;
-            case TYPE_BECH32:
-                success = bech32_decode(line, hash160);
-                break;
-            case TYPE_ETH:
-                success = eth_decode(line, hash160);
-                break;
-            case TYPE_UNKNOWN:
-                success = false;
-                break;
+        if (decode_address(line, hash160, coin_name)) {
+            if (hash160.size() == 20) {
+                buffer_bin.insert(buffer_bin.end(), hash160.begin(), hash160.end());
+                found++;
+            }
         }
-        
-        if (!success || hash160.size() != 20) continue;
-        
-        buffer_bin.insert(buffer_bin.end(), hash160.begin(), hash160.end());
-        found++;
     }
     
     if (!buffer_bin.empty()) {
@@ -292,26 +392,33 @@ void process_chunk(const std::vector<std::string>& lines,
     
     processed += (end_idx - start_idx);
     
-    if (processed % 1000000 == 0) {
-        std::cout << "\rProcessed: " << processed.load() / 1000000.0 << " M lines"
+    if (processed % 10000 == 0) {
+        std::cout << "\rProcessed: " << processed.load() 
                   << " | Found: " << found.load()
-                  << "     " << std::flush;
+                  << " | Rate: " << (double)found.load() / processed.load() * 100 << "%   "
+                  << std::flush;
     }
 }
 
 // ============================================================
 // MAIN
 // ============================================================
-int main() {
-    std::ifstream fin("wszystkieadresy_unique.txt");
+int main(int argc, char* argv[]) {
+    std::string input_file = "wszystkieadresy_unique.txt";
+    std::string output_file = "adresy.bin";
+    
+    if (argc >= 2) input_file = argv[1];
+    if (argc >= 3) output_file = argv[2];
+    
+    std::ifstream fin(input_file);
     if (!fin) {
-        std::cerr << "Cannot open input file: wszystkieadresy_unique.txt" << std::endl;
+        std::cerr << "Cannot open input file: " << input_file << std::endl;
         return 1;
     }
     
-    std::ofstream fout_bin("adresy.bin", std::ios::binary);
+    std::ofstream fout_bin(output_file, std::ios::binary);
     if (!fout_bin) {
-        std::cerr << "Cannot create adresy.bin" << std::endl;
+        std::cerr << "Cannot create " << output_file << std::endl;
         return 1;
     }
     
@@ -324,19 +431,36 @@ int main() {
     std::atomic<uint64_t> found(0);
     std::string line;
     
-    std::cout << "=== ADDRESS CONVERTER (BIN ONLY) ===" << std::endl;
-    std::cout << "Output: adresy.bin (20 bytes per address)" << std::endl;
+    std::cout << "=== UNIVERSAL ADDRESS CONVERTER ===" << std::endl;
+    std::cout << "Input: " << input_file << std::endl;
+    std::cout << "Output: " << output_file << std::endl;
+    std::cout << "======================================" << std::endl;
+    std::cout << "Supported coins:" << std::endl;
+    for (const auto& coin : COINS) {
+        if (!coin.prefix.empty() && !coin.is_bech32) {
+            std::string version_str;
+            for (uint8_t v : coin.version_bytes) {
+                char buf[4];
+                snprintf(buf, sizeof(buf), "%02X", v);
+                version_str += buf;
+            }
+            std::cout << "  - " << coin.name << " (prefix: " << coin.prefix 
+                      << ", version: 0x" << version_str << ")" << std::endl;
+        } else if (coin.is_bech32) {
+            std::cout << "  - " << coin.name << " (hrp: " << coin.bech32_hrp << "1)" << std::endl;
+        }
+    }
     std::cout << "======================================" << std::endl;
     std::cout << "Starting conversion..." << std::endl;
     
     while (true) {
         lines.clear();
         for (size_t i = 0; i < CHUNK_LINES && std::getline(fin, line); ++i) {
-            if (!line.empty()) lines.push_back(std::move(line));
+            if (!line.empty()) lines.push_back(line);
         }
         if (lines.empty()) break;
         
-        int num_threads = std::min(4, (int)std::thread::hardware_concurrency());
+        int num_threads = std::min(8, (int)std::thread::hardware_concurrency());
         if (num_threads == 0) num_threads = 4;
         
         size_t per_thread = (lines.size() + num_threads - 1) / num_threads;
@@ -359,7 +483,8 @@ int main() {
     std::cout << "\n\n=== CONVERSION FINISHED ===" << std::endl;
     std::cout << "Total lines processed: " << processed.load() << std::endl;
     std::cout << "Valid addresses found: " << found.load() << std::endl;
-    std::cout << "Saved to: adresy.bin" << std::endl;
+    std::cout << "Success rate: " << (double)found.load() / processed.load() * 100 << "%" << std::endl;
+    std::cout << "Saved to: " << output_file << std::endl;
     
     return 0;
 }
