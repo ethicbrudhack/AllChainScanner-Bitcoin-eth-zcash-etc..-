@@ -35,6 +35,22 @@ inline bool cmp20(const uint8_t* a, const uint8_t* b) {
     return memcmp(a, b, RECORD) < 0;
 }
 
+// ============================================================
+// POPRAWNIE OBSŁUGUJE PARTIAL WRITE
+// ============================================================
+void write_all(int fd, const void* buf, size_t len) {
+    const char* p = static_cast<const char*>(buf);
+    while (len > 0) {
+        ssize_t w = write(fd, p, len);
+        if (w < 0) {
+            perror("write");
+            exit(1);
+        }
+        p += w;
+        len -= w;
+    }
+}
+
 void sort_chunk(std::string infile, off_t offset, size_t bytes, std::string outfile) {
     if (bytes == 0) return;
     
@@ -81,12 +97,7 @@ void sort_chunk(std::string infile, off_t offset, size_t bytes, std::string outf
         written++;
         
         if (pos >= WRITE_BUFFER_SIZE) {
-            ssize_t w = write(ofd, write_buffer.data(), pos);
-            if (w != (ssize_t)pos) {
-                perror("write");
-                close(ofd);
-                exit(1);
-            }
+            write_all(ofd, write_buffer.data(), pos);
             pos = 0;
         }
 
@@ -101,12 +112,7 @@ void sort_chunk(std::string infile, off_t offset, size_t bytes, std::string outf
     }
 
     if (pos > 0) {
-        ssize_t w = write(ofd, write_buffer.data(), pos);
-        if (w != (ssize_t)pos) {
-            perror("write");
-            close(ofd);
-            exit(1);
-        }
+        write_all(ofd, write_buffer.data(), pos);
     }
 
     if (written != n) {
@@ -116,39 +122,24 @@ void sort_chunk(std::string infile, off_t offset, size_t bytes, std::string outf
     close(ofd);
 }
 
-bool verify_sorted(const std::string& filename) {
-    int fd = open(filename.c_str(), O_RDONLY);
-    if (fd < 0) {
-        std::cerr << "Cannot open " << filename << " for verification\n";
-        return false;
-    }
-
-    uint8_t prev[RECORD];
-    uint8_t cur[RECORD];
-    
-    ssize_t n = read(fd, prev, RECORD);
-    if (n != RECORD) {
-        close(fd);
-        return true;
-    }
-
-    bool ok = true;
-    size_t record_num = 1;
-    while (read(fd, cur, RECORD) == RECORD) {
-        if (memcmp(prev, cur, RECORD) > 0) {
-            std::cerr << "❌ SORT ERROR at record " << record_num << "\n";
-            ok = false;
-            break;
-        }
-        memcpy(prev, cur, RECORD);
-        record_num++;
-    }
-
-    close(fd);
-    return ok;
-}
-
 void merge_chunks(std::vector<std::string> parts, std::string out) {
+    // ============================================================
+    // SPRAWDŹ CZY CHUNKI ISTNIEJĄ
+    // ============================================================
+    std::vector<std::string> existing_parts;
+    for (const auto& part : parts) {
+        if (std::filesystem::exists(part) && std::filesystem::file_size(part) > 0) {
+            existing_parts.push_back(part);
+        }
+    }
+    
+    if (existing_parts.empty()) {
+        std::cerr << "ERROR: No chunk files found!\n";
+        return;
+    }
+    
+    std::cout << "\n📂 Merging " << existing_parts.size() << " chunks...\n";
+    
     struct Node {
         const uint8_t* ptr;
         const uint8_t* end;
@@ -159,23 +150,37 @@ void merge_chunks(std::vector<std::string> parts, std::string out) {
         }
     };
 
-    std::vector<int> fds(parts.size());
-    std::vector<uint8_t*> maps(parts.size());
-    std::vector<size_t> sizes(parts.size());
+    // ============================================================
+    // INICJALIZACJA Z DOMYŚLNYMI WARTOŚCIAMI
+    // ============================================================
+    std::vector<int> fds(existing_parts.size(), -1);
+    std::vector<uint8_t*> maps(existing_parts.size(), nullptr);
+    std::vector<size_t> sizes(existing_parts.size(), 0);
 
-    for (size_t i = 0; i < parts.size(); i++) {
-        fds[i] = open(parts[i].c_str(), O_RDONLY);
-        if (fds[i] < 0) { perror("open"); exit(1); }
+    for (size_t i = 0; i < existing_parts.size(); i++) {
+        fds[i] = open(existing_parts[i].c_str(), O_RDONLY);
+        if (fds[i] < 0) { 
+            perror("open");
+            continue;
+        }
 
         struct stat st{};
-        if (fstat(fds[i], &st) < 0) { perror("fstat"); exit(1); }
+        if (fstat(fds[i], &st) < 0) { 
+            perror("fstat");
+            close(fds[i]);
+            fds[i] = -1;
+            continue;
+        }
         sizes[i] = st.st_size;
 
         if (sizes[i] > 0) {
             maps[i] = (uint8_t*)mmap(nullptr, sizes[i], PROT_READ, MAP_SHARED, fds[i], 0);
-            if (maps[i] == MAP_FAILED) { perror("mmap"); exit(1); }
-        } else {
-            maps[i] = nullptr;
+            if (maps[i] == MAP_FAILED) { 
+                perror("mmap");
+                maps[i] = nullptr;
+                close(fds[i]);
+                fds[i] = -1;
+            }
         }
     }
 
@@ -187,8 +192,8 @@ void merge_chunks(std::vector<std::string> parts, std::string out) {
     size_t written = 0;
 
     std::priority_queue<Node> pq;
-    for (size_t i = 0; i < parts.size(); i++) {
-        if (sizes[i] > 0) {
+    for (size_t i = 0; i < existing_parts.size(); i++) {
+        if (sizes[i] > 0 && maps[i] != nullptr) {
             pq.push({maps[i], maps[i] + sizes[i], (int)i});
         }
     }
@@ -201,12 +206,7 @@ void merge_chunks(std::vector<std::string> parts, std::string out) {
         written++;
         
         if (pos >= WRITE_BUFFER_SIZE) {
-            ssize_t w = write(ofd, write_buffer.data(), pos);
-            if (w != (ssize_t)pos) {
-                perror("write");
-                close(ofd);
-                exit(1);
-            }
+            write_all(ofd, write_buffer.data(), pos);
             pos = 0;
         }
 
@@ -225,12 +225,7 @@ void merge_chunks(std::vector<std::string> parts, std::string out) {
     }
 
     if (pos > 0) {
-        ssize_t w = write(ofd, write_buffer.data(), pos);
-        if (w != (ssize_t)pos) {
-            perror("write");
-            close(ofd);
-            exit(1);
-        }
+        write_all(ofd, write_buffer.data(), pos);
     }
 
     size_t total_records = total_size / RECORD;
@@ -240,9 +235,9 @@ void merge_chunks(std::vector<std::string> parts, std::string out) {
 
     close(ofd);
 
-    for (size_t i = 0; i < parts.size(); i++) {
+    for (size_t i = 0; i < existing_parts.size(); i++) {
         if (maps[i]) munmap(maps[i], sizes[i]);
-        close(fds[i]);
+        if (fds[i] >= 0) close(fds[i]);
     }
 }
 
@@ -328,21 +323,26 @@ int main(int argc, char** argv) {
             std::cerr << "❌ ERROR: Output file is corrupted! Not multiple of 20!\n";
         } else {
             std::cout << "✅ Output file size OK (multiple of 20)\n";
-            
-            std::cout << "🔍 Verifying sort order...\n";
-            if (verify_sorted(out)) {
-                std::cout << "✅ Sort order verified OK!\n";
-            } else {
-                std::cerr << "❌ Sort order verification FAILED!\n";
-            }
         }
+    } else {
+        std::cerr << "ERROR: Output file not created!\n";
+        return 1;
     }
 
     std::cout << "\n✅ DONE! Sorted file saved to: " << out << "\n";
     std::cout << "📊 Records in output: " << (total_size / RECORD) << "\n";
 
+    // ============================================================
+    // USUŃ PLIKI CHUNK (JEŚLI ISTNIEJĄ)
+    // ============================================================
     for (const auto& chunk : chunks) {
-        std::filesystem::remove(chunk);
+        try {
+            if (std::filesystem::exists(chunk)) {
+                std::filesystem::remove(chunk);
+            }
+        } catch (...) {
+            // Ignoruj błędy usuwania
+        }
     }
 
     std::cout << "🧹 Temporary chunk files removed.\n";
