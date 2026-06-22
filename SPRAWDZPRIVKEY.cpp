@@ -1,5 +1,6 @@
 // ===============================
-// FAST BIP32 SCANNER v15 - TYLKO WYBRANE ŚCIEŻKI (OPTIMAL)
+// FAST BIP32 SCANNER v15 - TYLKO WYBRANE ŚCIEŻKI + P2SH (3...)
+// Z 24-BITOWYM INDEKSEM (128 MB) - SZYBSZY!
 // ===============================
 
 #include <iostream>
@@ -46,7 +47,7 @@ auto start_time = std::chrono::steady_clock::now();
 std::atomic<bool> monitor_stop{false};
 
 // ===============================
-// BASE58 - DOKŁADNIE TAK SAMO JAK W ORYGINALE
+// BASE58
 // ===============================
 static const char* BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -91,7 +92,7 @@ std::string base58check_encode(const std::vector<unsigned char>& data) {
 }
 
 // ===============================
-// HASH160 - DOKŁADNIE TAK SAMO
+// HASH160
 // ===============================
 inline void hash160(const unsigned char* data, size_t len, unsigned char out[20]) {
     unsigned char sha[32];
@@ -136,25 +137,122 @@ private:
     size_t size;
 };
 
-// Binary search
-inline bool contains_address(const MMapFile& mm, const unsigned char addr20[20]) {
-    const unsigned char* base = mm.ptr();
-    size_t count = mm.count();
+// ===============================
+// 24-BITOWY INDEKS PREFIKSOWY (128 MB) - SZYBSZY!
+// ===============================
+class PrefixIndex24 {
+private:
+    const MMapFile& mm;
+    std::vector<uint64_t> index;
+    bool ready;
 
-    size_t lo = 0, hi = count;
-    while (lo < hi) {
-        size_t mid = (lo + hi) / 2;
-        const unsigned char* midp = base + mid * 20;
-        int cmp = memcmp(midp, addr20, 20);
-        if (cmp == 0) return true;
-        if (cmp < 0) lo = mid + 1;
-        else hi = mid;
+    static inline uint32_t get_prefix24(const unsigned char* p) {
+        return (uint32_t(p[0]) << 16) | (uint32_t(p[1]) << 8) | uint32_t(p[2]);
     }
-    return false;
-}
+
+public:
+    PrefixIndex24(const MMapFile& m) : mm(m), ready(false) {
+        index.resize(16777217);
+        build();
+    }
+
+    void build() {
+        const unsigned char* base = mm.ptr();
+        uint64_t count = mm.count();
+        
+        std::cout << "📦 Budowanie 24-bitowego indeksu dla " << count << " adresów...\n";
+        std::cout << "📊 Rozmiar indeksu: ~" << (index.size() * sizeof(uint64_t)) / (1024*1024) << " MB\n";
+        
+        auto start_time = std::chrono::steady_clock::now();
+
+        uint64_t pos = 0;
+        uint64_t buckets_found = 0;
+
+        while (pos < count) {
+            const unsigned char* rec = base + pos * 20;
+            uint32_t p = get_prefix24(rec);
+            
+            index[p] = pos;
+            
+            uint64_t lo = pos;
+            uint64_t hi = count;
+            
+            while (lo + 1 < hi) {
+                uint64_t mid = (lo + hi) / 2;
+                const unsigned char* mid_rec = base + mid * 20;
+                uint32_t mp = get_prefix24(mid_rec);
+                
+                if (mp <= p)
+                    lo = mid;
+                else
+                    hi = mid;
+            }
+            
+            index[p + 1] = lo + 1;
+            
+            pos = lo + 1;
+            buckets_found++;
+            
+            if (buckets_found % 1000 == 0) {
+                std::cout << "\r   Przetworzono: " << pos << "/" << count 
+                          << " rekordów | Znaleziono: " << buckets_found 
+                          << " prefiksów" << std::flush;
+            }
+        }
+        
+        uint64_t last_start = 0;
+        uint64_t last_end = count;
+        
+        for (int i = 16777215; i >= 0; i--) {
+            if (index[i] != 0 || i == 0) {
+                last_start = index[i];
+                last_end = index[i + 1];
+            } else {
+                index[i] = last_start;
+                index[i + 1] = last_end;
+            }
+        }
+
+        auto end_time = std::chrono::steady_clock::now();
+        double seconds = std::chrono::duration<double>(end_time - start_time).count();
+        
+        std::cout << "\n✅ Indeks zbudowany: " << buckets_found << "/16777216 prefiksów używanych\n";
+        std::cout << "⏱️  Czas budowy: " << std::fixed << std::setprecision(1) << seconds << " s\n";
+        std::cout << "📊 Pamięć indeksu: ~" << (index.size() * sizeof(uint64_t)) / (1024*1024) << " MB\n";
+        
+        ready = true;
+    }
+
+    // ==========================================
+    // contains() z 24-bitowym indeksem - SZYBSZY!
+    // ==========================================
+    bool contains(const unsigned char addr20[20]) const {
+        uint32_t p = get_prefix24(addr20);
+        
+        uint64_t lo = index[p];
+        uint64_t hi = index[p + 1];
+        
+        if (lo >= hi) {
+            return false;
+        }
+        
+        const unsigned char* base = mm.ptr();
+        
+        while (lo < hi) {
+            uint64_t mid = (lo + hi) / 2;
+            const unsigned char* midp = base + mid * 20;
+
+            int cmp = memcmp(midp, addr20, 20);
+            if (cmp == 0) return true;
+            if (cmp < 0) lo = mid + 1;
+            else hi = mid;
+        }
+        return false;
+    }
+};
 
 // ===============================
-// SZYBKI KONTEXT PUBKEY
+// SZYBKI KONTEKST PUBKEY
 // ===============================
 struct FastPubCtx {
     secp256k1_context* ctx;
@@ -165,26 +263,64 @@ inline bool fast_load_priv(FastPubCtx& pc, const unsigned char priv[32]) {
     return secp256k1_ec_pubkey_create(pc.ctx, &pc.pub, priv) == 1;
 }
 
-// Generuje adres i hash160 - dokładnie tak samo jak privkey_to_address()
-inline std::string fast_priv_to_address(FastPubCtx& pc, bool compressed, unsigned char out_h160[20]) {
-    unsigned char pubkey[65];
-    size_t len = compressed ? 33 : 65;
-    if (secp256k1_ec_pubkey_serialize(pc.ctx, pubkey, &len, &pc.pub, 
-        compressed ? SECP256K1_EC_COMPRESSED : SECP256K1_EC_UNCOMPRESSED) != 1) {
+// ===============================
+// GENEROWANIE ADRESÓW
+// ===============================
+
+// BTC P2PKH (1...) - kompresowany
+inline std::string addr_p2pkh_compressed(FastPubCtx& pc, unsigned char out_h160[20]) {
+    unsigned char pubkey[33];
+    size_t len = 33;
+    if (secp256k1_ec_pubkey_serialize(pc.ctx, pubkey, &len, &pc.pub, SECP256K1_EC_COMPRESSED) != 1) {
         return "";
     }
-    
     hash160(pubkey, len, out_h160);
-    
     std::vector<unsigned char> data;
     data.push_back(0x00);
     data.insert(data.end(), out_h160, out_h160 + 20);
+    return base58check_encode(data);
+}
+
+// BTC P2PKH (1...) - niekompresowany
+inline std::string addr_p2pkh_uncompressed(FastPubCtx& pc, unsigned char out_h160[20]) {
+    unsigned char pubkey[65];
+    size_t len = 65;
+    if (secp256k1_ec_pubkey_serialize(pc.ctx, pubkey, &len, &pc.pub, SECP256K1_EC_UNCOMPRESSED) != 1) {
+        return "";
+    }
+    hash160(pubkey, len, out_h160);
+    std::vector<unsigned char> data;
+    data.push_back(0x00);
+    data.insert(data.end(), out_h160, out_h160 + 20);
+    return base58check_encode(data);
+}
+
+// BTC P2SH (3...) - NIEZALEŻNY!
+inline std::string addr_p2sh(FastPubCtx& pc, unsigned char out_h160[20]) {
+    unsigned char pubkey[33];
+    size_t len = 33;
+    if (secp256k1_ec_pubkey_serialize(pc.ctx, pubkey, &len, &pc.pub, SECP256K1_EC_COMPRESSED) != 1) {
+        return "";
+    }
     
+    unsigned char h160[20];
+    hash160(pubkey, len, h160);
+    
+    unsigned char redeem_script[22];
+    redeem_script[0] = 0x00;
+    redeem_script[1] = 0x14;
+    memcpy(redeem_script + 2, h160, 20);
+    
+    hash160(redeem_script, 22, out_h160);
+    
+    std::vector<unsigned char> data;
+    data.push_back(0x05);
+    data.insert(data.end(), out_h160, out_h160 + 20);
     return base58check_encode(data);
 }
 
 // ===============================
-// BIP32 FUNKCJE - DOKŁADNIE TAK SAMO JAK W ORYGINALE
+// BIP32 FUNKCJE
 // ===============================
 inline void bip32_master(const unsigned char* seed, size_t seed_len, unsigned char out_key[32], unsigned char out_chain[32]) {
     unsigned char hmac[64];
@@ -273,9 +409,9 @@ inline bool is_valid_private_key(const unsigned char priv[32]) {
 }
 
 // ===============================
-// SKANOWANIE JEDNEGO SEEDA - TYLKO WYBRANE ŚCIEŻKI (0-1)
+// SKANOWANIE JEDNEGO SEEDA Z 24-BITOWYM INDEKSEM
 // ===============================
-void scan_seed_fast(const MMapFile& mm, const unsigned char seed[32], const std::string& seed_hex, std::ofstream& found) {
+void scan_seed_fast(const PrefixIndex24& idx, const unsigned char seed[32], const std::string& seed_hex, std::ofstream& found) {
     secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
     
     unsigned char h160[20];
@@ -286,9 +422,9 @@ void scan_seed_fast(const MMapFile& mm, const unsigned char seed[32], const std:
     // 0. SEED BEZPOŚREDNIO JAKO KLUCZ
     // ==================================================
     if (fast_load_priv(fctx, seed)) {
-        // Compressed
-        std::string addr_comp = fast_priv_to_address(fctx, true, h160);
-        if (contains_address(mm, h160)) {
+        // Compressed (1...)
+        std::string addr_comp = addr_p2pkh_compressed(fctx, h160);
+        if (idx.contains(h160)) {
             std::lock_guard<std::mutex> lock(log_mutex);
             found << "SEED: " << seed_hex << "\nPRIV KEY: " << seed_hex << "\nPATH: direct_compressed\nADDR: " << addr_comp << "\n---\n";
             found.flush();
@@ -296,14 +432,24 @@ void scan_seed_fast(const MMapFile& mm, const unsigned char seed[32], const std:
             std::cout << "\n✅ ZNALEZIONO! direct compressed -> " << addr_comp << std::endl;
         }
         
-        // Uncompressed
-        std::string addr_uncomp = fast_priv_to_address(fctx, false, h160);
-        if (contains_address(mm, h160)) {
+        // Uncompressed (1...)
+        std::string addr_uncomp = addr_p2pkh_uncompressed(fctx, h160);
+        if (idx.contains(h160)) {
             std::lock_guard<std::mutex> lock(log_mutex);
             found << "SEED: " << seed_hex << "\nPRIV KEY: " << seed_hex << "\nPATH: direct_uncompressed\nADDR: " << addr_uncomp << "\n---\n";
             found.flush();
             total_found++;
             std::cout << "\n✅ ZNALEZIONO! direct uncompressed -> " << addr_uncomp << std::endl;
+        }
+        
+        // P2SH (3...) - NIEZALEŻNY!
+        std::string addr_p2sh_direct = addr_p2sh(fctx, h160);
+        if (idx.contains(h160)) {
+            std::lock_guard<std::mutex> lock(log_mutex);
+            found << "SEED: " << seed_hex << "\nPRIV KEY: " << seed_hex << "\nPATH: direct_p2sh\nADDR: " << addr_p2sh_direct << "\n---\n";
+            found.flush();
+            total_found++;
+            std::cout << "\n✅ ZNALEZIONO! direct p2sh -> " << addr_p2sh_direct << std::endl;
         }
     }
     
@@ -325,13 +471,24 @@ void scan_seed_fast(const MMapFile& mm, const unsigned char seed[32], const std:
         unsigned char child_key[32], child_chain[32];
         if (bip32_derive_normal(ctx, master_key, master_chain, child, child_key, child_chain)) {
             if (fast_load_priv(fctx, child_key)) {
-                std::string addr = fast_priv_to_address(fctx, true, h160);
-                if (contains_address(mm, h160)) {
+                // P2PKH compressed (1...)
+                std::string addr = addr_p2pkh_compressed(fctx, h160);
+                if (idx.contains(h160)) {
                     std::lock_guard<std::mutex> lock(log_mutex);
                     found << "SEED: " << seed_hex << "\nPATH: m/" << child << "\nADDR: " << addr << "\n---\n";
                     found.flush();
                     total_found++;
                     std::cout << "\n✅ ZNALEZIONO! m/" << child << " -> " << addr << std::endl;
+                }
+                
+                // P2SH (3...) - NIEZALEŻNY!
+                std::string addr_p2sh_child = addr_p2sh(fctx, h160);
+                if (idx.contains(h160)) {
+                    std::lock_guard<std::mutex> lock(log_mutex);
+                    found << "SEED: " << seed_hex << "\nPATH: m/" << child << "_p2sh\nADDR: " << addr_p2sh_child << "\n---\n";
+                    found.flush();
+                    total_found++;
+                    std::cout << "\n✅ ZNALEZIONO! m/" << child << " p2sh -> " << addr_p2sh_child << std::endl;
                 }
             }
         }
@@ -352,13 +509,24 @@ void scan_seed_fast(const MMapFile& mm, const unsigned char seed[32], const std:
                         unsigned char child_key[32], child_chain[32];
                         if (bip32_derive_normal(ctx, bip44_key4, bip44_chain4, child, child_key, child_chain)) {
                             if (fast_load_priv(fctx, child_key)) {
-                                std::string addr = fast_priv_to_address(fctx, true, h160);
-                                if (contains_address(mm, h160)) {
+                                // P2PKH compressed (1...)
+                                std::string addr = addr_p2pkh_compressed(fctx, h160);
+                                if (idx.contains(h160)) {
                                     std::lock_guard<std::mutex> lock(log_mutex);
                                     found << "SEED: " << seed_hex << "\nPATH: m/44'/0'/0'/0/" << child << "\nADDR: " << addr << "\n---\n";
                                     found.flush();
                                     total_found++;
                                     std::cout << "\n✅ ZNALEZIONO! m/44'/0'/0'/0/" << child << " -> " << addr << std::endl;
+                                }
+                                
+                                // P2SH (3...) - NIEZALEŻNY!
+                                std::string addr_p2sh_bip44 = addr_p2sh(fctx, h160);
+                                if (idx.contains(h160)) {
+                                    std::lock_guard<std::mutex> lock(log_mutex);
+                                    found << "SEED: " << seed_hex << "\nPATH: m/44'/0'/0'/0/" << child << "_p2sh\nADDR: " << addr_p2sh_bip44 << "\n---\n";
+                                    found.flush();
+                                    total_found++;
+                                    std::cout << "\n✅ ZNALEZIONO! m/44'/0'/0'/0/" << child << " p2sh -> " << addr_p2sh_bip44 << std::endl;
                                 }
                             }
                         }
@@ -370,12 +538,12 @@ void scan_seed_fast(const MMapFile& mm, const unsigned char seed[32], const std:
     
     // ==================================================
     // LICZBA KLUCZY: 
-    // direct: 2 (C+U)
-    // m/0-1: 2
-    // BIP44: 2
-    // RAZEM: 2 + 2 + 2 = 6 kluczy na seed
+    // direct: 3 (C+U+P2SH)
+    // m/0-1: 4 (2x P2PKH + 2x P2SH)
+    // BIP44: 4 (2x P2PKH + 2x P2SH)
+    // RAZEM: 11 kluczy na seed
     // ==================================================
-    total_keys += 6;
+    total_keys += 11;
     
     secp256k1_context_destroy(ctx);
 }
@@ -444,7 +612,7 @@ void producer(const std::string& seed_file) {
 // ===============================
 // KONSUMENT
 // ===============================
-void consumer(const MMapFile& mm, const std::string& output_file, int thread_id) {
+void consumer(const PrefixIndex24& idx, const std::string& output_file, int thread_id) {
     std::ofstream found(output_file, std::ios::app);
     
     while (true) {
@@ -468,7 +636,7 @@ void consumer(const MMapFile& mm, const std::string& output_file, int thread_id)
             seed[i] = (unsigned char)byte;
         }
         
-        scan_seed_fast(mm, seed, seed_hex, found);
+        scan_seed_fast(idx, seed, seed_hex, found);
         total_processed++;
     }
 }
@@ -478,19 +646,26 @@ void consumer(const MMapFile& mm, const std::string& output_file, int thread_id)
 // ===============================
 int main(int argc, char* argv[]) {
     if (argc < 3) {
-        std::cout << "Użycie: ./fastbip32 adresy.bin seeds.txt" << std::endl;
+        std::cout << "Użycie: ./SPRAWDZPRIVKEY adresy.bin seeds.txt" << std::endl;
         return 1;
     }
     
     try {
         MMapFile mm(argv[1]);
         std::cout << "📁 Wczytano " << mm.count() << " adresów z " << argv[1] << std::endl;
+        
+        // ==========================================
+        // 24-BITOWY INDEKS (128 MB) - SZYBSZY!
+        // ==========================================
+        PrefixIndex24 idx(mm);
+        
         std::cout << "🧵 Uruchamiam " << THREAD_COUNT << " wątków konsumenckich" << std::endl;
         std::cout << "📦 Kolejka: " << QUEUE_SIZE << " seedów" << std::endl;
         std::cout << "\n🔍 Szukane ścieżki:" << std::endl;
         std::cout << "   - direct (seed as key) compressed/uncompressed" << std::endl;
-        std::cout << "   - m/0-1" << std::endl;
-        std::cout << "   - BIP44: m/44'/0'/0'/0/0-1" << std::endl;
+        std::cout << "   - direct P2SH (3...) - NIEZALEŻNY!" << std::endl;
+        std::cout << "   - m/0-1 (P2PKH + P2SH)" << std::endl;
+        std::cout << "   - BIP44: m/44'/0'/0'/0/0-1 (P2PKH + P2SH)" << std::endl;
         std::cout << "\n🚀 Rozpoczynam skanowanie...\n" << std::endl;
         
         start_time = std::chrono::steady_clock::now();
@@ -505,7 +680,7 @@ int main(int argc, char* argv[]) {
         // Uruchom konsumentów
         std::vector<std::thread> consumers;
         for (int i = 0; i < THREAD_COUNT; i++) {
-            consumers.emplace_back(consumer, std::cref(mm), std::string("found.txt"), i);
+            consumers.emplace_back(consumer, std::cref(idx), std::string("found.txt"), i);
         }
         
         prod.join();
